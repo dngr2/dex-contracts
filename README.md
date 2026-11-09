@@ -98,11 +98,38 @@ full cold readback: `products/g2b-escrow/MULTICHAIN-DEPLOY-EVIDENCE.md`,
 in this tree predates it and inlines the same arithmetic (see `SOURCES.md`). `p4-atomic`
 (SHA-256 escrow, a g2b variant) is built but not yet deployed, so it is out of scope here.
 
+## wave-1 — BUILD WAVE 1, new products (not yet deployed)
+
+Branch `wave-1` adds seven new products from BUILD WAVE 1. Each compiles **standalone** with the same
+settings as everything above (`solc 0.8.34`, optimizer `runs = 200`, `evm_version = cancun`); each
+vendors `forge-std` under its own `lib/forge-std/src` so `forge build` inside the product dir needs
+nothing external.
+
+| product | subject | on-chain status |
+|---|---|---|
+| `fleet-executor` | `FleetExecutor` (+ `IFleetExecutor`) | **LIVE** at `0x8943793970d2B29180A1B30166c0e326Bc94d2D4` |
+| `x402` | `x402Facilitator` (+ `IPaymentRail`, `server/` ref impl) | source-only |
+| `settlement` | `SettlementRegistry` (+ interface) | source-only |
+| `fleet-paymaster` | `FleetPaymaster` (+ `utils/`, interfaces) | source-only |
+| `g4c-toll-registry` | `TollRegistry` + `TolledConsumer` (+ interface) | source-only |
+| `fees` | `FeeSplitter` + `ReferralRegistry` | source-only |
+| `rails` | `IPaymentRail` / `IEscrowRail` / `IStreamRail` / `IEscrowHook` (interfaces) | source-only (interfaces) |
+
+Only `fleet-executor` is on-chain so far. `x402`, `settlement`, `fleet-paymaster` and
+`g4c-toll-registry` are being deployed **now**; `fees` and `rails` are source-only. This branch is not
+a deploy-matching revision yet — the bytes here are HEAD, to be retargeted once the wave lands.
+
+Each product carries `foundry.toml`, `remappings.txt`, `src/`, `test/`, plus `script/Deploy.s.sol` and
+its own `README.md`/`MANIFEST.md`/key-record where present. `out/`, `cache/`, `broadcast/` and `.env`
+stay excluded, exactly as above.
+
 ## Layout
 
 ```
 <p2-forwarder|f1a-payment-links|g2b-escrow|g2a-streams|g3a-sponsorship|
  g4b-receipts|p3-router|f1c-duster|p3c-7702>/   each: foundry.toml + src/
+<x402|settlement|fleet-paymaster|g4c-toll-registry|fees|rails|fleet-executor>/
+                                                wave-1 products: foundry.toml + src/ + test/
 shared/FeeMath.sol                              reference (HEAD's shared toll)
 SOURCES.md   deployed-vs-HEAD delta + verdict legend + settings
 LICENSE      MIT
