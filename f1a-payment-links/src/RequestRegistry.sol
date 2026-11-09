@@ -17,7 +17,8 @@ import {IP2Registry} from "./interfaces/IP2Registry.sol";
 /// SETTLEMENT IS A STATUS BIT, NOT AN AMOUNT (v1, ruled).
 ///   The Forwarder forwards whatever arrives; we do NOT enforce "exactly `amount`" on-chain (that
 ///   would mean touching Forwarder — the EIP-1167 lesson). `amount` is the ASK, soft. Overpayment is
-///   the merchant's gain; underpayment is theirs to reconcile — both acceptable at 25 bps.
+///   the merchant's gain; underpayment is theirs to reconcile — both acceptable at the P2 rate
+///   (comments elsewhere say 25 bps; the LIVE Base feeBps is 500 — read it live, never assume 25).
 ///   `settle()` is PERMISSIONLESS (matches P2's trustless forward): anyone may flip it once goods/
 ///   funds have moved. Low-stakes bit; a keeper, the payer, or the merchant can all set it.
 ///
@@ -75,6 +76,8 @@ contract RequestRegistry {
     error ZeroDest();
     error NoSuchRequest();
     error AlreadySettled();
+    error NotSettler();
+    error NotPayer();
     error NotOwner();
 
     modifier onlyOwner() {
@@ -107,12 +110,16 @@ contract RequestRegistry {
     /// @param token address(0) for native, else ERC20
     /// @param amount the soft ask, in the token's smallest unit (not enforced on-chain)
     /// @param memo short opaque order ref; bytes32, URL-safe as hex
-    /// @param payer who is meant to pay; recorded + indexed for a chain-only reader
+    /// @param payer who is meant to pay; recorded + indexed for a chain-only reader. v1 REQUIRES
+    ///        `payer == msg.sender` (L-9): with no signature mechanism, letting a third party name an
+    ///        arbitrary payer let anyone pollute a payer's indexed queries. A future v2 that mints on
+    ///        a payer's behalf (StreamFactory) relaxes this with a signed intent, not by opening it.
     function request(address destination, address token, uint256 amount, bytes32 memo, address payer)
         public
         returns (uint256 id, address depositAddr)
     {
         if (destination == address(0)) revert ZeroDest();
+        if (payer != msg.sender) revert NotPayer();
 
         // Mints a stock P2 Forwarder owned by THIS contract; it emits Registry's `Registered`, so the
         // keeper learns depositAddr->destination with no change.
@@ -136,12 +143,15 @@ contract RequestRegistry {
         emit RequestCreated(id, msg.sender, payer, depositAddr, destination, token, amount, memo, nowTs);
     }
 
-    /// @notice Flip a request to settled. PERMISSIONLESS — anyone may call once funds/goods moved.
+    /// @notice Flip a request to settled. GATED (M-2): only the merchant, the named payer, or the
+    ///         owner may call — so an arbitrary third party can no longer mark an unpaid request paid
+    ///         while the UI renders `settled` as PAID. (v1 keeps a status bit; a fully trustless
+    ///         "the forwarder really moved funds" check needs an amount counter, deferred to v2.)
     function settle(uint256 id) external {
         Request storage r = _requests[id];
         if (r.depositAddr == address(0)) revert NoSuchRequest();
         if (r.settled) revert AlreadySettled();
-        r.settled = true;
+        if (msg.sender != r.merchant && msg.sender != r.payer && msg.sender != owner) revert NotSettler();        r.settled = true;
         r.settledAt = uint64(block.timestamp);
         emit Settled(id, r.depositAddr, msg.sender, r.settledAt);
     }
