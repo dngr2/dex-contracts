@@ -84,8 +84,8 @@ the g2b copy vendored for g4b fork tests live under each product's own `src/inte
 ## `v2` branch — audit fixes, NOT YET DEPLOYED
 
 `v2` is the working tree after the v2 audit-fix pass. It is **not** deployed: on the live Base
-factory `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` every v2 selector reverts (`setMandate 0xab02ef4b`,
-`setKeeper 0x748747e6`, `mandate 0x823ed2d8`, `lastEnd 0xf678f72c`), so the live runtime is still the
+factory `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` every v2 selector reverts (`setMandate(address,address,uint256,uint64,uint32,uint64) 0x88f67583`,
+`setKeeper(address,bool) 0xd1b9e853`, `mandate(address,address,address) 0x823ed2d8`, `hedgeEnd(address,address,address) 0xe08ec7d3`), so the live runtime is still the
 pre-v2 code and `main` stays the deployed-matching revision. Read this section as "what will ship",
 not "what is on chain".
 
