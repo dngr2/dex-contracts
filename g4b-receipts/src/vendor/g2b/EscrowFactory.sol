@@ -27,6 +27,9 @@ contract EscrowFactory {
 
     uint16 public feeBps;
     address public feeRecipient;
+    /// @dev Per-release minimum toll, in TOKEN BASE UNITS (see FeeMath). 0 = legacy: plain bps fee,
+    ///      and a sub-floor release forwards whole. Owner-settable.
+    uint256 public minFee;
     bool public paused;
 
     uint16 public constant MAX_FEE_BPS = 500;   // 5% ceiling
@@ -65,6 +68,7 @@ contract EscrowFactory {
     );
     event FeeBpsSet(uint16 bps);
     event FeeRecipientSet(address recipient);
+    event MinFeeSet(uint256 minFee);
     event PausedSet(bool paused);
     event OwnerSet(address owner);
 
@@ -174,6 +178,13 @@ contract EscrowFactory {
         if (bps > MAX_FEE_BPS) revert BadFee();
         feeBps = bps;
         emit FeeBpsSet(bps);
+    }
+
+    /// @notice Set the per-release minimum toll (token base units). 0 = legacy. No ceiling needed:
+    ///         a minFee above the ticket just skips the toll (FeeMath), never strands funds.
+    function setMinFee(uint256 minFee_) external onlyOwner {
+        minFee = minFee_;
+        emit MinFeeSet(minFee_);
     }
 
     function setFeeRecipient(address r) external onlyOwner {

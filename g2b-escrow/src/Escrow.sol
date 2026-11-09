@@ -3,6 +3,7 @@ pragma solidity 0.8.34;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IEscrowFactory} from "./interfaces/IEscrowFactory.sol";
+import {FeeMath} from "@shared/FeeMath.sol";
 
 /// @title Escrow — one instance per deal, deployed by EscrowFactory (CREATE2)
 /// @notice Holds a payer's ERC-20 until ONE of four terminal paths fires: the counterparty's
@@ -32,6 +33,18 @@ import {IEscrowFactory} from "./interfaces/IEscrowFactory.sol";
 /// MUTANT HOOKS: `release`, `refund`, `_release`, `_refund` are `virtual` so a test can deploy a
 ///   genuine rival contract that IS a bug (see test/unit/EscrowNegcontrol.t.sol). GOTCHAS #20: a
 ///   negcontrol must route the injection through the REAL mechanism, not hand-asserted math.
+///
+/// L-7 (audit, doc-only — two KNOWN properties, stated not fixed):
+///   * LATE-REVEAL RACE. After `deadline`, BOTH `release(preimage)` and `refund()` are live, and the
+///     first to land wins (`settled` latches). So the counterparty revealing at T+1s can lose to a
+///     payer's refund mined in the same window — the standard HTLC race. Either party can self-help
+///     by submitting first; no on-chain ordering fixes it. A v2 could close `release` at the deadline
+///     (then a late preimage is worthless) but that trades the race for "reveal-before-deadline or
+///     lose", so it is a product choice, not a bug.
+///   * POST-CONSTRUCTION DEPOSITS ARE STRANDED. `_credited()` returns the IMMUTABLE `amount` measured
+///     in the constructor; the terminal paths pay exactly that. A token sent to the escrow AFTER it
+///     was funded is never paid out (no sweep). Rebasing/FOT top-ups are the realistic case. v2 could
+///     credit the live balance, but that would change the fee base mid-deal, so v1 pins it and says so.
 contract Escrow {
     IEscrowFactory public immutable factory;
     address public immutable payer;
@@ -46,6 +59,23 @@ contract Escrow {
 
     uint256 private _lock;
     bool public settled;
+    /// @dev M-3 (audit): `settled` is ONE bool — true after EITHER a release OR a refund — so a
+    ///      downstream reader that treats "settled" as "the counterparty was PAID" is wrong on a
+    ///      refund (the payer got the money back instead). `released` is the honest discriminator:
+    ///      true ONLY on a release (hashlock or arbiter-release), false on every refund. ReceiptNFT
+    ///      gates its mint on `released`, not `settled`, so a receipt can no longer stand for a
+    ///      refunded deal. Both are set in the SAME tx as the terminal transfer, before it, so a
+    ///      reentrant reader never sees a settled-but-not-released intermediate on the release path.
+    bool public released;
+
+    /// @dev M-1 (audit): the toll RATE is SNAPSHOTTED at construction. The factory is owner-
+    ///      controlled and the escrow used to live-read `feeBps()`/`minFee()` at release, so an
+    ///      owner raise to 5% RETRO-TAXED funds already locked at the old rate. Freezing the rate
+    ///      makes the payer's price BINDING at lock time; `feeRecipient` stays LIVE (routing, not
+    ///      rate). Read in the constructor from the SAME `factory_` arg → ctor signature, initCode,
+    ///      CREATE2 parity (predict()) and the mutant factories are unchanged.
+    uint16 public immutable feeBpsSnap;
+    uint256 public immutable minFeeSnap;
 
     /// @param preimage the revealed preimage (0 on arbiter/refund paths)
     /// @param to the recipient (counterparty on release, payer on refund)
@@ -96,6 +126,10 @@ contract Escrow {
         // here. MEASURING (not asserting) is the FOT-safe credit — see header.
         amount = IERC20(token_).balanceOf(address(this));
         if (amount == 0) revert ZeroArg();
+        // M-1: freeze the RELEASE rate now. A later owner feeBps/minFee raise cannot retro-tax a
+        // deal already locked. (feeRecipient stays live — routing, not rate.)
+        feeBpsSnap = IEscrowFactory(factory_).feeBps();
+        minFeeSnap = IEscrowFactory(factory_).minFee();
         _lock = 1;
     }
 
@@ -134,17 +168,24 @@ contract Escrow {
 
     function _release(bytes32 preimage) internal virtual {
         settled = true;
+        released = true;              // M-3: release (not refund) — the receipt's discriminator
         uint256 cred = _credited();
         // Shared fee definition (shared/src/FeeMath.sol) — on release only, exactly as before when
         // minFee==0. A sub-floor release forwards the whole credit (no toll); a small credit pays at
         // least the floor. `cred > 0` is guaranteed by the constructor, so `out > 0` always holds.
-        uint256 fee = (cred * factory.feeBps()) / 10_000;
-        uint256 out = cred - fee;
+        (uint256 fee, uint256 out) = _toll(cred);
         if (out > 0) _pay(counterparty, out);
         if (fee > 0) _pay(factory.feeRecipient(), fee);
         emit Released(preimage, counterparty, cred, fee, out, msg.sender);
     }
 
+    /// @dev The ONLY definition of THIS product's toll, and the mutant seam — SAME idiom as p2
+    ///      Forwarder._toll and g2a StreamVault._toll, all three delegating to one library. At
+    ///      `factory.minFee()==0` this is byte-for-byte the old `(cred * feeBps) / 10_000`.
+    /// @dev M-1: reads the SNAPSHOT rate (frozen at construction), not the live factory rate.
+    function _toll(uint256 cred) internal view virtual returns (uint256 fee, uint256 out) {
+        return FeeMath.toll(cred, feeBpsSnap, minFeeSnap);
+    }
 
     function _refund() internal virtual {
         settled = true;

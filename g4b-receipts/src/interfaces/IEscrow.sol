@@ -14,4 +14,7 @@ interface IEscrow {
     function deadline() external view returns (uint64);
     function hash() external view returns (bytes32);
     function settled() external view returns (bool);
+    /// @dev M-3 (audit): true ONLY on a release. `settled` is true after release OR refund, so this
+    ///      is the honest "the counterparty was PAID" discriminator the receipt mints on.
+    function released() external view returns (bool);
 }

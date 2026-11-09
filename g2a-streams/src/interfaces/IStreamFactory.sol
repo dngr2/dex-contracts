@@ -8,4 +8,5 @@ interface IStreamFactory {
     function feeBps() external view returns (uint16);
     function feeRecipient() external view returns (address);
     /// @dev Per-withdraw minimum toll in token base units; 0 = legacy (no floor).
+    function minFee() external view returns (uint256);
 }

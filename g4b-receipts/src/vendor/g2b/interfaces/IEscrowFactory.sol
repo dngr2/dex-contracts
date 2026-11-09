@@ -6,4 +6,6 @@ pragma solidity 0.8.34;
 interface IEscrowFactory {
     function feeBps() external view returns (uint16);
     function feeRecipient() external view returns (address);
+    /// @dev Per-release minimum toll in token base units; 0 = legacy (no floor).
+    function minFee() external view returns (uint256);
 }

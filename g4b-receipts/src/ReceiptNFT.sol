@@ -5,8 +5,8 @@ import {IEscrow} from "./interfaces/IEscrow.sol";
 import {IEscrowFactory} from "./interfaces/IEscrowFactory.sol";
 
 /// @title ReceiptNFT — a proof-of-payment receipt minted on a COMPLETED g2b escrow.
-/// @notice ONE ERC-721 per settled escrow, minted to the PAYER. The receipt carries the escrow's
-///         on-chain facts (counterparty, token, amount, settledAt) and a fully on-chain tokenURI.
+/// @notice ONE ERC-721 per RELEASED escrow, minted to the PAYER. The receipt carries the escrow's
+///         on-chain facts (counterparty, token, amount, releasedAt) and a fully on-chain tokenURI.
 ///
 /// WHY STANDALONE-VERIFY, NOT A HOOK IN g2b
 ///   g2b's Escrow is already deployed and IMMUTABLE, so it cannot call out to a receipt. Instead the
@@ -16,10 +16,10 @@ import {IEscrowFactory} from "./interfaces/IEscrowFactory.sol";
 ///
 /// HONEST SCOPE (read before claiming what a receipt proves)
 ///   * `escrow.settled()` is ONE bool: it is true after EITHER a release OR a refund, and both drain
-///     the escrow to zero. So the NFT proves the escrow SETTLED and carries the payer/token/amount —
-///     it does NOT, on its own, prove the escrow was RELEASED (vs refunded). The release-vs-refund
-///     discriminator is the escrow's Released/Refunded LOG. We store `settledAt` (the block time we
-///     observed) and say so in the metadata rather than invent a path claim we cannot read.
+///     the escrow to zero. v1 minted on `settled`, so a receipt could stand for a deal the payer got
+///     REFUNDED — not a completed payment. v2 (M-3) gates on `escrow.released()` (true ONLY on a
+///     release), so a receipt now means "the counterparty was PAID". `releasedAt` records the block
+///     time we observed it.
 ///   * A `mintFeeWei` (default 0; LIVE deployed value 5e13 wei as of 2026-11-07) is charged per MINT —
 ///     but a receipt only EXISTS per completed payment, so this is "one fee per completed flow", not
 ///     per arbitrary mint. A 0-value escrow still mints but the fee only earns where a real payment
@@ -65,7 +65,7 @@ contract ReceiptNFT {
         address token;        // address(0) == native
         uint256 amount;       // credited amount on the escrow (FOT-safe: what ARRIVED)
         bytes32 hash;         // the escrow's hashlock (0 if arbiter-only)
-        uint64 settledAt;     // block time this receipt first verified settlement
+        uint64 releasedAt;    // block time this receipt first verified a RELEASE
     }
     /// @dev tokenId => facts. tokenId starts at 1 (0 is a common "unset" sentinel).
     mapping(uint256 => Facts) public facts;
@@ -80,17 +80,36 @@ contract ReceiptNFT {
     /// @dev factory => pinned EXTCODEHASH. 0 == allowlisted but not codehash-pinned.
     mapping(address => bytes32) public factoryCodehashOf;
 
+    /// @dev M-5 (audit) — Ownable2Step + 48h timelock, matching g2a/g2b. `mintFeeWei` and
+    ///      `feeRecipient` are the MONEY knobs: a mint reads `mintFeeWei` live, so an instant write
+    ///      re-priced every in-flight mint. Both now go stage(eta = now+48h) → commit. `setFactory` /
+    ///      `setFactoryCodehash` stay INSTANT: the former is an emergency de-allowlist of a bad
+    ///      factory (a 48h-frozen kill-switch is not a kill-switch), the latter is a code pin, not a
+    ///      price. Ownership is two-step (OZ shape): `transferOwnership` stages, `acceptOwnership`
+    ///      completes. See the field notes in g2a's StreamFactory for the reasoning.
+    address public pendingOwner;
+    uint64 public mintFeeEta;
+    uint64 public feeRecipientEta;
+    uint256 public pendingMintFee;
+    address public pendingFeeRecipient;
+    uint64 public constant TIMELOCK = 48 hours;
+
     error NotOwner();
     error ZeroArg();
     error NotSettled();
+    error NotReleased();
     error UnknownFactory();
     error FactoryCodehashMismatch();
     error NotAFactoryChild();
     error AlreadyMinted();
+    error NotMinted();
     error Underpaid();
     error NotAuthorized();
     error BadFrom();
     error NoReceiver();
+    error NotPendingOwner();
+    error NotStaged();
+    error TimelockNotElapsed();
 
     event Minted(address indexed escrow, address indexed payer, uint256 indexed tokenId, address minter);
     event FactoryAllowed(address factory, bool allowed);
@@ -98,6 +117,12 @@ contract ReceiptNFT {
     event MintFeeSet(uint256 wei_);
     event FeeRecipientSet(address recipient);
     event OwnerSet(address owner);
+    event MintFeeStaged(uint256 wei_, uint64 eta);
+    event FeeRecipientStaged(address recipient, uint64 eta);
+    event MintFeeCanceled();
+    event FeeRecipientCanceled();
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferred(address indexed from, address indexed to);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -120,7 +145,7 @@ contract ReceiptNFT {
     // ---- the product ----
 
     /// @notice Mint the receipt for a SETTLED escrow. PERMISSIONLESS. Idempotent.
-    /// @param escrow a settled g2b escrow that is a real CREATE2 child of an allowlisted factory.
+    /// @param escrow a RELEASED g2b escrow that is a real CREATE2 child of an allowlisted factory.
     /// @return tokenId the receipt id (minted to the escrow's payer).
     function mintForEscrow(address escrow) external payable returns (uint256 tokenId) {
         if (receiptOf[escrow] != 0) revert AlreadyMinted();
@@ -139,7 +164,7 @@ contract ReceiptNFT {
         // lookalike can copy getters and embed the arg blob, but cannot join the factory's array.
         if (!_isFactoryChild(f, payer, escrow)) revert NotAFactoryChild();
 
-        if (!e.settled()) revert NotSettled();
+        _requireReleased(e);
 
         tokenId = ++totalMinted;                 // 1-based
         receiptOf[escrow] = tokenId;
@@ -150,12 +175,16 @@ contract ReceiptNFT {
             token: e.token(),
             amount: e.amount(),
             hash: e.hash(),
-            settledAt: uint64(block.timestamp)
+            releasedAt: uint64(block.timestamp)
         });
 
         _mint(payer, tokenId);
 
-        if (msg.value > 0) _payNative(feeRecipient, msg.value);
+        // L-6: only the fee is taken; any overpayment (msg.value above the fee) is returned to the
+        // CALLER, not silently kept. mintFeeWei is read live at mint, so the split is exact.
+        if (mintFeeWei != 0) _payNative(feeRecipient, mintFeeWei);
+        uint256 excess = msg.value - mintFeeWei;
+        if (excess != 0) _payNative(msg.sender, excess);
         emit Minted(escrow, payer, tokenId, msg.sender);
     }
 
@@ -169,10 +198,26 @@ contract ReceiptNFT {
         return false;
     }
 
+    /// @dev M-3 gate, and the mutant seam (virtual). v2 requires `released` (true only on a release),
+    ///      so a REFUNDED escrow mints no receipt.
+    ///      MIGRATION: escrows are IMMUTABLE and already deployed — every LIVE escrow is v1 and has
+    ///      no `released()` getter. So we PROBE for it: if the selector answers, this is a v2 escrow
+    ///      and `released` is the authority; if it is absent (v1), `settled` is all the chain offers
+    ///      and we say so (a v1 refund is indistinguishable on-chain). `virtual` so a negcontrol can
+    ///      re-inject the v1 "settled is enough" bug through the REAL mint path.
+    function _requireReleased(IEscrow e) internal view virtual {
+        (bool ok, bytes memory ret) = address(e).staticcall(abi.encodeWithSelector(IEscrow.released.selector));
+        if (ok && ret.length >= 32) {
+            if (!abi.decode(ret, (bool))) revert NotReleased();
+        } else {
+            if (!e.settled()) revert NotSettled();
+        }
+    }
+
     /// @notice The escrow's full record, joined for a reader. Convenience over `facts`.
     function receiptOf_(address escrow) external view returns (Facts memory) {
         uint256 id = receiptOf[escrow];
-        if (id == 0) revert AlreadyMinted();  // i.e. not minted yet
+        if (id == 0) revert NotMinted();  // L-6: was AlreadyMinted, which reads backwards when unminted
         return facts[id];
     }
 
@@ -200,9 +245,9 @@ contract ReceiptNFT {
         return string(
             abi.encodePacked(
                 '{"name":"g2b Receipt #', _u2s(tokenId),
-                '","description":"Proof of a completed g2b escrow (settled on-chain). Escrow ',
-                _hex(f.escrow), ' settled; payer ', _hex(f.payer),
-                '. NOTE: settled is true after release OR refund; the path is the escrow event log.",',
+                '","description":"Proof of a COMPLETED g2b escrow (released on-chain). Escrow ',
+                _hex(f.escrow), ' released to the counterparty; payer ', _hex(f.payer),
+                '. NOTE: released is true only on a release; a refunded escrow mints no receipt.",',
                 '"attributes":['
             )
         );
@@ -216,7 +261,7 @@ contract ReceiptNFT {
                 '{"trait_type":"counterparty","value":"', _hex(f.counterparty), '"},',
                 '{"trait_type":"token","value":"', _hex(f.token), '"},',
                 '{"trait_type":"amount","value":"', _u2s(f.amount), '"},',
-                '{"trait_type":"settledAt","value":', _u2s(uint256(f.settledAt)), '}'
+                '{"trait_type":"releasedAt","value":', _u2s(uint256(f.releasedAt)), '}'
             )
         );
     }
@@ -230,7 +275,9 @@ contract ReceiptNFT {
         return o;
     }
     function supportsInterface(bytes4 id) external pure returns (bool) {
-        return id == 0x01ffc9a7 || id == 0x80ac58cd;  // ERC165, ERC721
+        return id == 0x01ffc9a7            // ERC165
+            || id == 0x80ac58cd            // ERC721
+            || id == 0x5b5e139f;           // ERC721Metadata (L-6: name/symbol/tokenURI all exist)
     }
 
     function approve(address to, uint256 id) external {
@@ -284,19 +331,60 @@ contract ReceiptNFT {
         factoryCodehashOf[f] = codehash_;
         emit FactoryCodehashPinned(f, codehash_);
     }
-    function setMintFee(uint256 wei_) external onlyOwner {
-        mintFeeWei = wei_;
-        emit MintFeeSet(wei_);
+    function setMintFee(uint256 wei_) public virtual onlyOwner {
+        pendingMintFee = wei_;
+        mintFeeEta = uint64(block.timestamp) + TIMELOCK;
+        emit MintFeeStaged(wei_, mintFeeEta);
     }
-    function setFeeRecipient(address r) external onlyOwner {
+    function commitMintFee() public {
+        if (mintFeeEta == 0) revert NotStaged();
+        if (block.timestamp < mintFeeEta) revert TimelockNotElapsed();
+        mintFeeWei = pendingMintFee;
+        mintFeeEta = 0;
+        emit MintFeeSet(mintFeeWei);
+    }
+    function cancelMintFee() external onlyOwner {
+        if (mintFeeEta == 0) revert NotStaged();
+        mintFeeEta = 0;
+        emit MintFeeCanceled();
+    }
+
+    function setFeeRecipient(address r) public virtual onlyOwner {
         if (r == address(0)) revert ZeroArg();
-        feeRecipient = r;
-        emit FeeRecipientSet(r);
+        pendingFeeRecipient = r;
+        feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
+        emit FeeRecipientStaged(r, feeRecipientEta);
     }
-    function setOwner(address o) external onlyOwner {
+    function commitFeeRecipient() public {
+        if (feeRecipientEta == 0) revert NotStaged();
+        if (block.timestamp < feeRecipientEta) revert TimelockNotElapsed();
+        feeRecipient = pendingFeeRecipient;
+        feeRecipientEta = 0;
+        emit FeeRecipientSet(feeRecipient);
+    }
+    function cancelFeeRecipient() external onlyOwner {
+        if (feeRecipientEta == 0) revert NotStaged();
+        feeRecipientEta = 0;
+        emit FeeRecipientCanceled();
+    }
+
+    /// @notice Ownable2Step handoff (OZ shape): stages `o`; `o` must `acceptOwnership`.
+    function setOwner(address o) public onlyOwner {
         if (o == address(0)) revert ZeroArg();
-        owner = o;
-        emit OwnerSet(o);
+        pendingOwner = o;
+        emit OwnershipTransferStarted(owner, o);
+    }
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address old = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(old, owner);
+        emit OwnerSet(owner);   // legacy event kept for pre-M-5 tooling
+    }
+    /// @notice Alias so an OZ-shaped integrator can use the standard name too.
+    function transferOwnership(address o) external onlyOwner {
+        setOwner(o);
     }
 
     // ---- internals ----

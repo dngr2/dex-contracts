@@ -10,7 +10,7 @@
 //
 //   CONTENT HASH (keccak256 of this file with THIS header block stripped, i.e. the p3 bytes,
 //   EXACT — trailing newline included; a shell `$(cat f)` strips it and shifts the hash):
-//     0xcdcf7f16cdeb10d55595a2c1305c1bbeb4066a1cc6ec596cc56e4434ae4a90db
+//     0xdcb943ae3c537b1a0a5ce89c89a36a72c5d1d649a52177712db5bdeff69fc3ad
 //
 //   If you must change this file: change it here AND (only if P3 has moved) re-record the pin.
 //   test/unit/VendorDrift.t.sol fails loudly the moment p3-router and this copy diverge, which
@@ -46,6 +46,15 @@ import {IAerodromeRouter} from "./interfaces/IAerodrome.sol";
 ///     Base Sepolia (whose Uniswap V3 deployment lives at different addresses). The quote engine
 ///     supplies it. A malicious router is therefore a caller-trusted input — see PLAN.md.
 ///
+///  L-1 (caller-trusted venue; stranded balances are sweepable by anyone). Because `venueRouter` is
+///     arbitrary, a hop can approve a router that never pulls, or pulls less than `amountIn`. The
+///     Router keeps NO per-user accounting, so anything left here between calls belongs to nobody in
+///     particular and ANY next caller (via their own swap) can route it out. `amountOutMin` is
+///     checked per-swap, but there is no "rescue" entrypoint. The mitigation is procedural: the
+///     quote engine must re-derive the route fresh each swap (venue swaps are on-chain, not here),
+///     and a per-hop balance-delta measurement (rather than trusting `returned`) would make a
+///     short-pulling router fail loud instead of stranding. Left as-is by design — stated, not fixed.
+///
 ///  5. OWNERSHIP: immutable (proposal, not decided). `feeBps` and `treasury` are fixed at deploy,
 ///     removing the admin-key attack surface entirely. P3b/P3c redeploy anyway. Flipping to
 ///     Ownable is a small, contained change — see `FEE_BPS`/`TREASURY` below.
@@ -55,7 +64,18 @@ contract Router {
     uint8 internal constant VENUE_AERODROME = 1;
 
     // ---------------------------------------------------------------- config
-    uint256 public constant MAX_FEE_BPS = 10_000;
+    /// @dev #144: this is the 10_000 DENOMINATOR, NOT a 500-bps cap (as it is on the factories).
+    ///      Kept `internal` so the back-compat `MAX_FEE_BPS()` getter below can carry the name.
+    uint256 internal constant BPS_DENOMINATOR = 10_000;
+
+    /// @dev ABI BACK-COMPAT (I-3): the live router answers `MAX_FEE_BPS()` (selector 0xd55be8c6 →
+    ///      10000) and off-chain readers key on that selector (dex-site/PRODUCTS.json sig entries,
+    ///      merchant page SEL.maxFeeBps). A bare rename to BPS_DENOMINATOR would revert them, so the
+    ///      getter name is preserved and just returns the denominator.
+    function MAX_FEE_BPS() external pure returns (uint256) {
+        return BPS_DENOMINATOR;
+    }
+
     uint256 public immutable feeBps;
     address public immutable treasury;
 
@@ -99,7 +119,7 @@ contract Router {
     error FeeTooHigh(uint256 bps);
 
     constructor(uint256 feeBps_, address treasury_) {
-        if (feeBps_ > MAX_FEE_BPS) revert FeeTooHigh(feeBps_);
+        if (feeBps_ > BPS_DENOMINATOR) revert FeeTooHigh(feeBps_);
         if (treasury_ == address(0)) revert ZeroAmount();
         feeBps = feeBps_;
         treasury = treasury_;
@@ -116,6 +136,10 @@ contract Router {
         _checkDeadline(p.deadline);
         if (p.hops.length == 0) revert EmptyRoute();
         if (p.amountIn == 0) revert ZeroAmount();
+        // L-2: a zero recipient is accepted by both venues as a literal sink — the output lands at
+        // address(0), recoverable by nobody (fork-proved on Uniswap SwapRouter02 + Aerodrome). Only
+        // the LAST hop can be hit, since intermediate hops force address(this).
+        if (p.recipient == address(0)) revert ZeroAmount();
 
         Hop calldata first = p.hops[0];
 
@@ -160,10 +184,10 @@ contract Router {
     // A control that recomputes the "buggy" value by hand proves nothing (GOTCHAS #20);
     // overriding these makes `swapExactTokensForTokens` itself run the bad arithmetic.
 
-    /// @dev floor(received * feeBps / MAX_FEE_BPS). Rounding DOWN is the deliberate choice:
+    /// @dev floor(received * feeBps / BPS_DENOMINATOR). Rounding DOWN is the deliberate choice:
     ///      rounding up would make the fee exceed the user's `amountIn * bps / 10_000` intuition.
     function _feeFor(uint256 received) internal view virtual returns (uint256) {
-        return (received * feeBps) / MAX_FEE_BPS;
+        return (received * feeBps) / BPS_DENOMINATOR;
     }
 
     /// @dev What is actually routed. Splitting it out makes the "forgot to subtract the fee"

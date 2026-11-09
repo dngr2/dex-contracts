@@ -21,8 +21,11 @@ import {IRegistry} from "./interfaces/IRegistry.sol";
 contract Registry is IRegistry {
     address public owner;
 
-    uint16 public feeBps;
+    uint16 public feeBps;               // deploy default 25; LIVE Base = 500 (raised 25→100→500)
     address public feeRecipient;
+    /// @dev Minimum toll, in TOKEN BASE UNITS, applied per forward (see FeeMath). 0 = legacy: the
+    ///      plain `bps` fee with no floor, and a sub-floor ticket forwards whole. Owner-settable.
+    uint256 public minFee;
     bool public paused;
 
     uint16 public constant MAX_FEE_BPS = 500;   // 5% ceiling
@@ -45,6 +48,7 @@ contract Registry is IRegistry {
     );
     event FeeBpsSet(uint16 bps);
     event FeeRecipientSet(address recipient);
+    event MinFeeSet(uint256 minFee);
     event PausedSet(bool paused);
     event OwnerSet(address owner);
 
@@ -127,6 +131,14 @@ contract Registry is IRegistry {
         if (bps > MAX_FEE_BPS) revert BadFee();
         feeBps = bps;
         emit FeeBpsSet(bps);
+    }
+
+    /// @notice Set the per-forward minimum toll (base units of the forwarded token). 0 = legacy.
+    /// @dev No ceiling needed: a minFee larger than the balance simply skips the toll (FeeMath.toll
+    ///      line) — it can never strand funds, so any value is safe.
+    function setMinFee(uint256 minFee_) external onlyOwner {
+        minFee = minFee_;
+        emit MinFeeSet(minFee_);
     }
 
     function setFeeRecipient(address r) external onlyOwner {

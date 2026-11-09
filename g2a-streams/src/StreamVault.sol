@@ -3,6 +3,7 @@ pragma solidity 0.8.34;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IStreamFactory} from "./interfaces/IStreamFactory.sol";
+import {FeeMath} from "@shared/FeeMath.sol";
 
 /// @title StreamVault — ONE contract instance per stream. Money vests linearly; the recipient pulls.
 /// @notice A payer escrows `amount` at creation; the recipient's `withdrawable` grows as a pure
@@ -49,6 +50,32 @@ contract StreamVault {
     bool public canceled;
     uint256 private _lock;
 
+    /// @dev M-4 (audit): credited-but-undelivered amounts. A NATIVE send invokes the recipient's
+    ///      receive()/fallback, so a CONTRACT recipient (multisig, smart wallet, staking proxy) that
+    ///      reverts used to make withdraw() and cancel() revert for EVERYONE — the stream bricked on
+    ///      a payee we do not control. v2 CREDITS instead of reverting: the amount is held here and
+    ///      pulled later by `claim`, so the rail never stalls on a reverting payee. ERC20 `transfer`
+    ///      carries no recipient callback, so ERC20 keeps the strict require().
+    mapping(address => uint256) public claimable;
+    /// @dev Sum of all `claimable` values — kept so `cancel` can exclude pending credits from the
+    ///      payer's refund (they are already "paid out" logically and must stay backed in the vault).
+    ///      Overlap-free (a global sum), unlike summing per-address which double-counts an address
+    ///      that is both recipient and feeRecipient.
+    uint256 public creditedOutstanding;
+
+    event Credited(address indexed to, uint256 amount);
+    event Claimed(address indexed to, uint256 amount);
+
+    /// @dev M-1 (audit): the toll RATE is SNAPSHOTTED at construction. The factory is owner-controlled
+    ///      and the vault used to live-read `feeBps()`/`minFee()` at each pull, so an owner raise to
+    ///      5% RETRO-TAXED funds the payer had already locked at the old rate. Snapshotting makes the
+    ///      payer's rate BINDING at creation; a factory change now only affects NEW streams.
+    ///      `feeRecipient` stays LIVE (routing, not rate) — re-pointing the treasury must not be a
+    ///      reason to redeploy. Read in the constructor from the SAME `factory_` arg, so the ctor
+    ///      signature, initCode, CREATE2 parity (predict()) and the mutant factories are unchanged.
+    uint16 public immutable feeBpsSnap;
+    uint256 public immutable minFeeSnap;
+
     /// @dev Same signature AND topic shape as P2 Registry's `Registered` (topic0 verified identical
     ///      with `cast keccak`): topics[2]=this vault, topics[3]=recipient. Emitted at CREATE2 time
     ///      by the factory's constructor call, so the keeper's existing decode caches vault->recipient
@@ -86,6 +113,7 @@ contract StreamVault {
     error Locked();
     error NotPayer();
     error AlreadyCanceled();
+    error NothingClaimable();
 
     modifier nonReentrant() {
         if (_lock != 1) revert Locked();
@@ -126,6 +154,9 @@ contract StreamVault {
         start = start_;
         end = end_;
         duration = end_ - start_;
+        // M-1: freeze the RATE now; a later owner fee raise cannot retro-tax a locked stream.
+        feeBpsSnap = IStreamFactory(factory_).feeBps();
+        minFeeSnap = IStreamFactory(factory_).minFee();
         _lock = 1;
 
         emit Registered(payer_, address(this), recipient_, token_ == address(0), salt_, index_);
@@ -195,14 +226,35 @@ contract StreamVault {
         if (w == 0) return (0, 0);
 
         // ONE shared definition for both G2-a sites (withdraw + cancel) and all three products.
-        fee = (w * factory.feeBps()) / 10_000;
-        recipientOut = w - fee;
+        (fee, recipientOut) = _toll(w);
         withdrawn += w;
 
         if (recipientOut > 0) _pay(token, recipient, recipientOut);
         if (fee > 0) _pay(token, factory.feeRecipient(), fee);
 
         emit Withdrawn(recipient, msg.sender, token, w, fee, recipientOut, withdrawn);
+    }
+
+    /// @notice Withdraw any CREDITED-but-undelivered balance (M-4). Anyone may call; the funds can
+    ///         only reach `to` (the immutable recipient or payer), never the caller.
+    /// @dev A native recipient whose receive() reverts is credited in _pay instead of bricking the
+    ///      pull/cancel; this retries delivery. Reverts if nothing is claimable so a UI can tell.
+    function claim(address to) external nonReentrant returns (uint256 paid) {
+        paid = claimable[to];
+        if (paid == 0) revert NothingClaimable();
+        claimable[to] = 0;
+        creditedOutstanding -= paid;
+        _payStrict(token, to, paid);     // strict here: a claim that still can't deliver reverts cleanly
+        emit Claimed(to, paid);
+    }
+
+    /// @dev The ONLY definition of THIS product's toll, and the mutant seam: shared/src/FeeMath.sol
+    ///      so the two G2-a sites and the sibling products cannot drift (GOTCHAS #131). At
+    ///      `minFee()==0` this is byte-for-byte the old `(w * feeBps) / 10_000`. `virtual` so a
+    ///      negcontrol can re-inject the "minFee ignored" bug through the REAL withdraw path.
+    /// @dev M-1: reads the SNAPSHOT rate (frozen at construction), not the live factory rate.
+    function _toll(uint256 w) internal view virtual returns (uint256 fee, uint256 out) {
+        return FeeMath.toll(w, feeBpsSnap, minFeeSnap);
     }
 
     /// @notice End the stream: recipient gets what accrued, payer gets the rest. PAYER ONLY.
@@ -214,17 +266,19 @@ contract StreamVault {
 
         uint256 w = withdrawable();
         // same definition as _pull (via _toll) — a cancel must split identically or the two paths drift
-        uint256 fee = (w * factory.feeBps()) / 10_000;
-        uint256 recipientOut = w - fee;
+        (uint256 fee, uint256 recipientOut) = _toll(w);
 
         canceled = true;
         withdrawn += w;
 
-        // The payer's refund is what is ACTUALLY here, not an arithmetic ideal — see PAYER-REFUND
-        // note. For well-behaved tokens they are identical; for a fee-on-transfer token the vault
-        // would hold less than `amount`, and refunding the real balance is the honest choice.
+        // The payer's refund is what is ACTUALLY here, minus what is ALREADY owed to someone else: the
+        // recipient's/fee's share of THIS cancel, AND any earlier credited-but-undelivered balance
+        // (M-4) that `claim` still has to pay out. See PAYER-REFUND note. For well-behaved tokens the
+        // un-credited parts are identical to the arithmetic ideal; for a fee-on-transfer token the
+        // vault holds less than `amount`, and refunding the real remainder is the honest choice.
         uint256 bal = _balance(token);
-        uint256 refund = bal > (recipientOut + fee) ? bal - (recipientOut + fee) : 0;
+        uint256 owed = recipientOut + fee + creditedOutstanding;
+        uint256 refund = bal > owed ? bal - owed : 0;
 
         if (recipientOut > 0) _pay(token, recipient, recipientOut);
         if (fee > 0) _pay(token, factory.feeRecipient(), fee);
@@ -262,7 +316,28 @@ contract StreamVault {
     /// @dev Safe transfer tolerating non-bool-returning tokens (USDT class): accepts a `true` return
     ///      OR an empty return; anything else is a failure, not a silent pass. P2's exact rule — a
     ///      token returning `false` must NOT read as success.
-    function _pay(address t, address to, uint256 v) internal {
+    /// @dev M-4: NATIVE delivery is now SOFT — a recipient whose receive() reverts is CREDITED (held
+    ///      in `claimable`) rather than reverting the whole pull/cancel. ERC20 `transfer` is atomic
+    ///      with no recipient callback, so ERC20 stays a hard require(). `virtual` so a negcontrol can
+    ///      re-inject the v1 "native revert bricks the pull" bug through the REAL path.
+    function _pay(address t, address to, uint256 v) internal virtual {
+        if (t == address(0)) {
+            (bool ok, ) = payable(to).call{value: v}("");
+            if (!ok) {
+                claimable[to] += v;      // credit; deliverable later via claim(to)
+                creditedOutstanding += v;
+                emit Credited(to, v);
+            }
+        } else {
+            (bool ok, bytes memory ret) = t.call(abi.encodeWithSelector(IERC20.transfer.selector, to, v));
+            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "erc20 transfer failed");
+        }
+    }
+
+    /// @dev STRICT variant used by `claim`: the whole point of a claim is to deliver, so a still-
+    ///      reverting recipient reverts the claim (the credit stays, retryable) rather than silently
+    ///      re-crediting itself.
+    function _payStrict(address t, address to, uint256 v) internal {
         if (t == address(0)) {
             (bool ok, ) = payable(to).call{value: v}("");
             require(ok, "native send failed");

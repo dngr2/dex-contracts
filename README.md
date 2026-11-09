@@ -11,6 +11,10 @@ reproduces the on-chain bytecode.
 - **What revision:** the **deployed-matching** source, which predates a later shared-`FeeMath`/`minFee`
   refactor. Read `SOURCES.md` first — it names the delta exactly.
 
+> **On `main` = deployed-matching (the live Base bytecode). On the `v2` branch = the audit-fixed
+> source, NOT YET DEPLOYED.** See "## `v2` branch — audit fixes, not yet deployed" at the bottom.
+> `main` repoints only when the fixes actually go on chain (new addresses).
+
 ## Live contracts → source → byte-match
 
 Everything below was checked cold: fetch the live runtime with `eth_getCode`, strip the CBOR metadata
@@ -76,3 +80,46 @@ LICENSE      MIT
 Third-party router/router interfaces (`IUniswapV3Router`, `IAerodrome`, `IPermit2`, `IQuoterV2`) and
 the g2b copy vendored for g4b fork tests live under each product's own `src/interfaces` and
 `src/vendor`. They are interfaces/vendored copies, not the subject of the byte-match table.
+
+## `v2` branch — audit fixes, NOT YET DEPLOYED
+
+`v2` is the working tree after the v2 audit-fix pass. It is **not** deployed: on the live Base
+factory `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` every v2 selector reverts (`setMandate 0xab02ef4b`,
+`setKeeper 0x748747e6`, `mandate 0x823ed2d8`, `lastEnd 0xf678f72c`), so the live runtime is still the
+pre-v2 code and `main` stays the deployed-matching revision. Read this section as "what will ship",
+not "what is on chain".
+
+Same settings as `main` (`solc 0.8.34`, optimizer 200, cancun). Verified: all eight products below
+`forge build` clean **standalone inside this tree**.
+
+### The one new mapping
+
+`g2a-streams`, `g2b-escrow`, `p2-forwarder` now import the shared toll library as
+`@shared/FeeMath.sol`. Each of those three ships a `remappings.txt`:
+
+```
+@shared/=../shared/
+```
+
+so `../shared/FeeMath.sol` (the file already at the repo root) resolves without vendoring a second copy.
+
+### What v2 changes, per product
+
+- **g2a-streams** — `StreamFactory`, `StreamVault`, `IStreamFactory` (mandate + keeper fixes, the
+  C-1 last-end window), new `src/mocks/MockERC20.sol`.
+- **g2b-escrow** — `Escrow`, `EscrowFactory`, `IEscrowFactory` (M-1/M-3), new `src/mocks/MockERC20.sol`.
+- **g3a-sponsorship** — `SponsorTarget` (delegate fix), new `src/Counter.sol`.
+- **g4b-receipts** — `ReceiptNFT`, `IEscrow`, vendored `g2b/*`, new `src/vendor/shared/FeeMath.sol`
+  (self-contained; no `@shared` needed here).
+- **p2-forwarder** — `Forwarder`, `Registry`, `IRegistry`, new `IP2Registry.sol`, `RequestLedger.sol`,
+  `RequestRegistry.sol`, `src/mocks/MockERC20.sol`.
+- **p3c-7702** — `P3cDelegate` (EIP-712 signed intent, namespaced-slot nonce), vendored `Router`.
+- **p3-router** — `Router` (slippage-bounded).
+- **f1c-duster** — `DustSweeper`, vendored `Router`.
+
+### Correction to the "deployed-matching" scope
+
+`main`'s opening line says nine contracts live on Base. The deployed bytecode of the nine is in fact
+**replicated across 8 further chains at the same addresses** (plain `CREATE`, address = f(deployer,
+nonce), chain-independent) — same runtime keccak `0x3394a7f2…aedb`. The address table on `main` lists
+only the Base addresses; the multi-chain footprint is the same nine, nine times.

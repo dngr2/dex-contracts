@@ -20,18 +20,37 @@ import {IERC20} from "./interfaces/IERC20.sol";
 /// measures its own balance. So there is no factory-held-funds moment and no "sweep the factory"
 /// step. The payer must first `approve(factory, amount)` on the token.
 ///
-/// DEFAULT FEE: bps on RELEASE only, nothing on refund (critic ruling). Default 25 bps to match the
-/// P2 precedent; owner-settable below a 5% ceiling.
+/// FEE: bps on RELEASE only, nothing on refund (critic ruling). DEPLOY default 25 bps to match the
+/// P2 precedent, owner-settable below a 5% ceiling — but the DEPLOYED value is NOT 25: the live Base
+/// factory is 500 bps (raised 25→100→500 by the owner; read `feeBps()` live, never assume 25).
 contract EscrowFactory {
     address public owner;
 
     uint16 public feeBps;
     address public feeRecipient;
+    /// @dev Per-release minimum toll, in TOKEN BASE UNITS (see FeeMath). 0 = legacy: plain bps fee,
+    ///      and a sub-floor release forwards whole. Owner-settable.
+    uint256 public minFee;
     bool public paused;
+
+    /// @dev M-5 (audit) — Ownable2Step + 48h timelock, same shape as g2a's StreamFactory. `feeBps` /
+    ///      `minFee` are LIVE-read by every escrow at release (and `feeRecipient` routes the toll), so
+    ///      a one-tx owner write re-priced live deals with zero warning. The three MONEY knobs now go
+    ///      stage(eta = now+48h) → commit; `paused` + `setKeeper` stay INSTANT (brake + role grant).
+    ///      `transferOwnership` only STAGES (Ownable2Step, OZ shape, no delay); the incoming key must
+    ///      `acceptOwnership`, so a typo'd handoff cannot orphan a treasury-owned factory.
+    address public pendingOwner;
+    uint64 public feeBpsEta;            // 0 = nothing staged; else earliest commit time
+    uint64 public minFeeEta;
+    uint64 public feeRecipientEta;
+    uint16 public pendingFeeBps;
+    uint256 public pendingMinFee;
+    address public pendingFeeRecipient;
 
     uint16 public constant MAX_FEE_BPS = 500;   // 5% ceiling
     uint64 public constant MIN_TIMEOUT = 10 minutes;   // refund window floor (a DURATION)
     uint64 public constant MAX_TIMEOUT = 365 days;     // refund window ceiling (a DURATION)
+    uint64 public constant TIMELOCK = 48 hours; // M-5: every fee/recipient change waits this long
 
     /// @dev Deal params as a struct: keeps `createFor` off the stack-too-deep edge, and gives the page
     ///      one static tuple to encode (all fields static => flat head, no inner offsets).
@@ -65,8 +84,18 @@ contract EscrowFactory {
     );
     event FeeBpsSet(uint16 bps);
     event FeeRecipientSet(address recipient);
+    event MinFeeSet(uint256 minFee);
     event PausedSet(bool paused);
     event OwnerSet(address owner);
+    /// @dev M-5 — the timelock's own log, mirroring g2a: `*Staged` at request, the `*Set` above at commit.
+    event FeeBpsStaged(uint16 bps, uint64 eta);
+    event MinFeeStaged(uint256 minFee, uint64 eta);
+    event FeeRecipientStaged(address recipient, uint64 eta);
+    event FeeBpsCanceled();
+    event MinFeeCanceled();
+    event FeeRecipientCanceled();
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferred(address indexed from, address indexed to);
 
     error NotOwner();
     error BadFee();
@@ -74,13 +103,17 @@ contract EscrowFactory {
     error Paused();
     error BadTimeout();
     error DeployFailed();
+    error NotPendingOwner();
+    error NotStaged();
+    error TimelockNotElapsed();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
         _;
     }
 
-    /// @param feeBps_ in bps (25 = 0.25%). Default set by the deployer.
+    /// @param feeBps_ in bps (25 = 0.25%); set by the deployer, then owner-settable. The live Base
+    ///        factory runs 500 bps (5%) — the param name is a unit, not a promise of 25.
     constructor(address owner_, address feeRecipient_, uint16 feeBps_) {
         if (owner_ == address(0) || feeRecipient_ == address(0)) revert ZeroArg();
         if (feeBps_ > MAX_FEE_BPS) revert BadFee();
@@ -169,17 +202,74 @@ contract EscrowFactory {
     }
 
     // ---- admin (same names/events as P2 Registry) ----
+    //
+    // M-5 SHAPE: the three MONEY knobs are STAGE -> WAIT 48h -> COMMIT; `setX` stages (emits `*Staged`),
+    // `commitX` applies (emits the historical `*Set` at the moment the value actually moves). `cancelX`
+    // clears before it lands. Re-staging replaces the value AND restarts the clock. `paused` stays
+    // INSTANT. See the field-block note.
 
-    function setFeeBps(uint16 bps) external onlyOwner {
+    function setFeeBps(uint16 bps) public virtual onlyOwner {
         if (bps > MAX_FEE_BPS) revert BadFee();
-        feeBps = bps;
-        emit FeeBpsSet(bps);
+        pendingFeeBps = bps;
+        feeBpsEta = uint64(block.timestamp) + TIMELOCK;
+        emit FeeBpsStaged(bps, feeBpsEta);
     }
 
-    function setFeeRecipient(address r) external onlyOwner {
+    function commitFeeBps() public {
+        if (feeBpsEta == 0) revert NotStaged();
+        if (block.timestamp < feeBpsEta) revert TimelockNotElapsed();
+        feeBps = pendingFeeBps;
+        feeBpsEta = 0;
+        emit FeeBpsSet(feeBps);
+    }
+
+    function cancelFeeBps() external onlyOwner {
+        if (feeBpsEta == 0) revert NotStaged();
+        feeBpsEta = 0;
+        emit FeeBpsCanceled();
+    }
+
+    /// @notice STAGE the per-release minimum toll (token base units). 0 = legacy. Commit after 48h.
+    ///         No ceiling needed: a minFee above the ticket just skips the toll (FeeMath).
+    function setMinFee(uint256 minFee_) public virtual onlyOwner {
+        pendingMinFee = minFee_;
+        minFeeEta = uint64(block.timestamp) + TIMELOCK;
+        emit MinFeeStaged(minFee_, minFeeEta);
+    }
+
+    function commitMinFee() public {
+        if (minFeeEta == 0) revert NotStaged();
+        if (block.timestamp < minFeeEta) revert TimelockNotElapsed();
+        minFee = pendingMinFee;
+        minFeeEta = 0;
+        emit MinFeeSet(minFee);
+    }
+
+    function cancelMinFee() external onlyOwner {
+        if (minFeeEta == 0) revert NotStaged();
+        minFeeEta = 0;
+        emit MinFeeCanceled();
+    }
+
+    function setFeeRecipient(address r) public virtual onlyOwner {
         if (r == address(0)) revert ZeroArg();
-        feeRecipient = r;
-        emit FeeRecipientSet(r);
+        pendingFeeRecipient = r;
+        feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
+        emit FeeRecipientStaged(r, feeRecipientEta);
+    }
+
+    function commitFeeRecipient() public {
+        if (feeRecipientEta == 0) revert NotStaged();
+        if (block.timestamp < feeRecipientEta) revert TimelockNotElapsed();
+        feeRecipient = pendingFeeRecipient;
+        feeRecipientEta = 0;
+        emit FeeRecipientSet(feeRecipient);
+    }
+
+    function cancelFeeRecipient() external onlyOwner {
+        if (feeRecipientEta == 0) revert NotStaged();
+        feeRecipientEta = 0;
+        emit FeeRecipientCanceled();
     }
 
     function setPaused(bool p) external onlyOwner {
@@ -187,10 +277,20 @@ contract EscrowFactory {
         emit PausedSet(p);
     }
 
+    /// @notice Ownable2Step handoff (OZ shape): stages `o`; `o` must `acceptOwnership` to take over.
     function transferOwnership(address o) external onlyOwner {
         if (o == address(0)) revert ZeroArg();
-        owner = o;
-        emit OwnerSet(o);
+        pendingOwner = o;
+        emit OwnershipTransferStarted(owner, o);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address old = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(old, owner);
+        emit OwnerSet(owner);   // legacy event kept for pre-M-5 tooling
     }
 
     function escrowCount(address payer) external view returns (uint256) {

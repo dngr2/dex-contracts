@@ -26,6 +26,7 @@ pragma solidity 0.8.34;
 
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IUniswapV3Router} from "./interfaces/IUniswapV3Router.sol";
+import {IPermit2} from "./interfaces/IPermit2.sol";
 
 /// @title DustSweeper — Option B. Stateless, no storage, no owner, no fee.
 /// @notice For each token: pull the user's full balance via Permit2, approve the venue router,
@@ -33,10 +34,11 @@ import {IUniswapV3Router} from "./interfaces/IUniswapV3Router.sol";
 /// @dev The user approves THIS contract once per token (max), forever. No MC3, so
 ///      `msg.sender == user` throughout and no third party ever holds an allowance.
 contract DustSweeper {
-    IPermit2Like public constant PERMIT2 = IPermit2Like(0x000000000022D473030F116dDEE9F6B43aC78BA3);
+    IPermit2 public constant PERMIT2 = IPermit2(0x000000000022D473030F116dDEE9F6B43aC78BA3);
+    uint8 internal constant VENUE_UNIV3 = 0;
 
     struct HopInput {
-        uint8 venue; // 0 = UniV3
+        uint8 venue; // I-4: only 0 (UniV3) is wired; a non-zero id is rejected, not silently mis-called.
         address tokenIn;
         address tokenOut;
         uint24 feeTier;
@@ -45,6 +47,8 @@ contract DustSweeper {
 
     error Empty();
     error Swept();
+    error TokenMismatch();
+    error UnsupportedVenue(uint8 venue);
 
     /// @param tokens   the dust tokens to sweep (each must be approved to Permit2 by the user)
     /// @param hops     parallel array: the single hop that turns tokens[i] into USDC
@@ -64,7 +68,16 @@ contract DustSweeper {
             PERMIT2.transferFrom(msg.sender, address(this), _u160(bal), tokens[i]);
 
             HopInput calldata h = hops[i];
-            _approve(tokens[i], h.venueRouter, bal);
+            // L-4: the swap pulls `h.tokenIn` from THIS contract, but we approve `tokens[i]`; if the
+            // caller passes a mismatched hop the approve lands on the wrong token. Require they agree.
+            if (h.tokenIn != tokens[i]) revert TokenMismatch();
+            // I-4: the venue id was silently ignored — every hop went out via the UniV3 call shape
+            // regardless. Reject anything we do not actually route, so a bad id fails loud, not quiet.
+            if (h.venue != VENUE_UNIV3) revert UnsupportedVenue(h.venue);
+            // L-3: approve EXACTLY `bal` (not type(uint256).max), then reset to 0 right after the
+            // swap. A blanket max approve leaves a caller-chosen venue able to spend any future
+            // balance that briefly sits here; exact-then-reset bounds that to nothing once swept.
+            _setApprove(tokens[i], h.venueRouter, bal);
             uint256 out = IUniswapV3Router(h.venueRouter).exactInputSingle(
                 IUniswapV3Router.ExactInputSingleParams({
                     tokenIn: h.tokenIn,
@@ -76,23 +89,21 @@ contract DustSweeper {
                     sqrtPriceLimitX96: 0
                 })
             );
+            _setApprove(tokens[i], h.venueRouter, 0);
             totalOut += out;
         }
     }
 
-    function _approve(address token, address spender, uint256 amount) internal {
-        uint256 a = IERC20(token).allowance(address(this), spender);
-        if (a < amount) {
-            if (a != 0) IERC20(token).approve(spender, 0); // USDT-style
-            IERC20(token).approve(spender, type(uint256).max);
+    /// @dev Set the allowance to EXACTLY `amount`, clearing to 0 first so USDT-style tokens (which
+    ///      require a zero before any new non-zero value) work. No-op if already equal.
+    function _setApprove(address token, address spender, uint256 amount) internal {
+        if (IERC20(token).allowance(address(this), spender) != amount) {
+            IERC20(token).approve(spender, 0);
+            IERC20(token).approve(spender, amount);
         }
     }
 
     function _u160(uint256 x) internal pure returns (uint160) {
         return uint160(x);
     }
-}
-
-interface IPermit2Like {
-    function transferFrom(address from, address to, uint160 amount, address token) external;
 }
