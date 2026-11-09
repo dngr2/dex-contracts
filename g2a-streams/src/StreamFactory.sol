@@ -337,8 +337,12 @@ contract StreamFactory is IStreamFactory {
     /// @dev Validates the ceiling at STAGE time so a bad value fails immediately, not 48h later.
     function setFeeBps(uint16 bps) public virtual onlyOwner {
         if (bps > MAX_FEE_BPS) revert BadFee();
+        // Re-staging the SAME value KEEPS the running clock (a no-op touch must not push the eta out);
+        // a DIFFERENT value RESTARTS it, so each distinct value gets its own full 48h of notice. (A
+        // per-value timelock is the point: swapping the value at eta-1s while keeping the eta would
+        // give the new value ~no notice.)
+        if (feeBpsEta == 0 || pendingFeeBps != bps) feeBpsEta = uint64(block.timestamp) + TIMELOCK;
         pendingFeeBps = bps;
-        feeBpsEta = uint64(block.timestamp) + TIMELOCK;
         emit FeeBpsStaged(bps, feeBpsEta);
     }
 
@@ -361,8 +365,8 @@ contract StreamFactory is IStreamFactory {
     /// @notice STAGE the per-withdraw minimum toll (token base units). 0 = legacy. Commit after 48h.
     ///         No ceiling: a minFee above the withdrawable amount just skips the toll.
     function setMinFee(uint256 minFee_) public virtual onlyOwner {
+        if (minFeeEta == 0 || pendingMinFee != minFee_) minFeeEta = uint64(block.timestamp) + TIMELOCK;
         pendingMinFee = minFee_;
-        minFeeEta = uint64(block.timestamp) + TIMELOCK;
         emit MinFeeStaged(minFee_, minFeeEta);
     }
 
@@ -383,8 +387,8 @@ contract StreamFactory is IStreamFactory {
     /// @notice STAGE a new treasury address. Commit after 48h. Non-zero enforced at stage time.
     function setFeeRecipient(address r) public virtual onlyOwner {
         if (r == address(0)) revert ZeroArg();
+        if (feeRecipientEta == 0 || pendingFeeRecipient != r) feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
         pendingFeeRecipient = r;
-        feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
         emit FeeRecipientStaged(r, feeRecipientEta);
     }
 

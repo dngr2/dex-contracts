@@ -210,8 +210,8 @@ contract EscrowFactory {
 
     function setFeeBps(uint16 bps) public virtual onlyOwner {
         if (bps > MAX_FEE_BPS) revert BadFee();
+        if (feeBpsEta == 0 || pendingFeeBps != bps) feeBpsEta = uint64(block.timestamp) + TIMELOCK;
         pendingFeeBps = bps;
-        feeBpsEta = uint64(block.timestamp) + TIMELOCK;
         emit FeeBpsStaged(bps, feeBpsEta);
     }
 
@@ -232,8 +232,8 @@ contract EscrowFactory {
     /// @notice STAGE the per-release minimum toll (token base units). 0 = legacy. Commit after 48h.
     ///         No ceiling needed: a minFee above the ticket just skips the toll (FeeMath).
     function setMinFee(uint256 minFee_) public virtual onlyOwner {
+        if (minFeeEta == 0 || pendingMinFee != minFee_) minFeeEta = uint64(block.timestamp) + TIMELOCK;
         pendingMinFee = minFee_;
-        minFeeEta = uint64(block.timestamp) + TIMELOCK;
         emit MinFeeStaged(minFee_, minFeeEta);
     }
 
@@ -253,8 +253,8 @@ contract EscrowFactory {
 
     function setFeeRecipient(address r) public virtual onlyOwner {
         if (r == address(0)) revert ZeroArg();
+        if (feeRecipientEta == 0 || pendingFeeRecipient != r) feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
         pendingFeeRecipient = r;
-        feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
         emit FeeRecipientStaged(r, feeRecipientEta);
     }
 

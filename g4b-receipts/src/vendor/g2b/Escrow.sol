@@ -33,6 +33,18 @@ import {FeeMath} from "../shared/FeeMath.sol";
 /// MUTANT HOOKS: `release`, `refund`, `_release`, `_refund` are `virtual` so a test can deploy a
 ///   genuine rival contract that IS a bug (see test/unit/EscrowNegcontrol.t.sol). GOTCHAS #20: a
 ///   negcontrol must route the injection through the REAL mechanism, not hand-asserted math.
+///
+/// L-7 (audit, doc-only — two KNOWN properties, stated not fixed):
+///   * LATE-REVEAL RACE. After `deadline`, BOTH `release(preimage)` and `refund()` are live, and the
+///     first to land wins (`settled` latches). So the counterparty revealing at T+1s can lose to a
+///     payer's refund mined in the same window — the standard HTLC race. Either party can self-help
+///     by submitting first; no on-chain ordering fixes it. A v2 could close `release` at the deadline
+///     (then a late preimage is worthless) but that trades the race for "reveal-before-deadline or
+///     lose", so it is a product choice, not a bug.
+///   * POST-CONSTRUCTION DEPOSITS ARE STRANDED. `_credited()` returns the IMMUTABLE `amount` measured
+///     in the constructor; the terminal paths pay exactly that. A token sent to the escrow AFTER it
+///     was funded is never paid out (no sweep). Rebasing/FOT top-ups are the realistic case. v2 could
+///     credit the live balance, but that would change the fee base mid-deal, so v1 pins it and says so.
 contract Escrow {
     IEscrowFactory public immutable factory;
     address public immutable payer;

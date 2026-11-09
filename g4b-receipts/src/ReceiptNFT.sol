@@ -332,8 +332,8 @@ contract ReceiptNFT {
         emit FactoryCodehashPinned(f, codehash_);
     }
     function setMintFee(uint256 wei_) public virtual onlyOwner {
+        if (mintFeeEta == 0 || pendingMintFee != wei_) mintFeeEta = uint64(block.timestamp) + TIMELOCK;
         pendingMintFee = wei_;
-        mintFeeEta = uint64(block.timestamp) + TIMELOCK;
         emit MintFeeStaged(wei_, mintFeeEta);
     }
     function commitMintFee() public {
@@ -351,8 +351,8 @@ contract ReceiptNFT {
 
     function setFeeRecipient(address r) public virtual onlyOwner {
         if (r == address(0)) revert ZeroArg();
+        if (feeRecipientEta == 0 || pendingFeeRecipient != r) feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
         pendingFeeRecipient = r;
-        feeRecipientEta = uint64(block.timestamp) + TIMELOCK;
         emit FeeRecipientStaged(r, feeRecipientEta);
     }
     function commitFeeRecipient() public {
