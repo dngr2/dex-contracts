@@ -98,7 +98,7 @@ full cold readback: `products/g2b-escrow/MULTICHAIN-DEPLOY-EVIDENCE.md`,
 in this tree predates it and inlines the same arithmetic (see `SOURCES.md`). `p4-atomic`
 (SHA-256 escrow, a g2b variant) is built but not yet deployed, so it is out of scope here.
 
-## wave-1 — BUILD WAVE 1, new products (not yet deployed)
+## wave-1 — BUILD WAVE 1, new products (5 of 7 now deployed on Base)
 
 Branch `wave-1` adds seven new products from BUILD WAVE 1. Each compiles **standalone** with the same
 settings as everything above (`solc 0.8.34`, optimizer `runs = 200`, `evm_version = cancun`); each
@@ -107,17 +107,20 @@ nothing external.
 
 | product | subject | on-chain status |
 |---|---|---|
-| `fleet-executor` | `FleetExecutor` (+ `IFleetExecutor`) | **LIVE** at `0x8943793970d2B29180A1B30166c0e326Bc94d2D4` |
-| `x402` | `x402Facilitator` (+ `IPaymentRail`, `server/` ref impl) | source-only |
-| `settlement` | `SettlementRegistry` (+ interface) | source-only |
-| `fleet-paymaster` | `FleetPaymaster` (+ `utils/`, interfaces) | source-only |
-| `g4c-toll-registry` | `TollRegistry` + `TolledConsumer` (+ interface) | source-only |
+| `fleet-executor` | `FleetExecutor` (+ `IFleetExecutor`) | **LIVE** `0x8943793970d2B29180A1B30166c0e326Bc94d2D4` |
+| `x402` | `x402Facilitator` (+ `IPaymentRail`, `server/` ref impl) | **LIVE** `0xED79DE434D2a2633EedD95890E35637f0d41AEb3` |
+| `settlement` | `SettlementRegistry` (+ interface) | **LIVE** `0x773b19856D3B477A071323B726c7f72DbB5B6e48` |
+| `fleet-paymaster` | `FleetPaymaster` (+ `utils/`, interfaces) | **LIVE** `0x51B6c98a857E19FBC5C3f85b04D28E8f91c54426` |
+| `g4c-toll-registry` | `TollRegistry` + `TolledConsumer` (+ interface) | **LIVE** (TollRegistry) `0x39019ECf94A54EB9D62e7cBc1bB66724aA1db70a` |
 | `fees` | `FeeSplitter` + `ReferralRegistry` | source-only |
 | `rails` | `IPaymentRail` / `IEscrowRail` / `IStreamRail` / `IEscrowHook` (interfaces) | source-only (interfaces) |
 
-Only `fleet-executor` is on-chain so far. `x402`, `settlement`, `fleet-paymaster` and
-`g4c-toll-registry` are being deployed **now**; `fees` and `rails` are source-only. This branch is not
-a deploy-matching revision yet — the bytes here are HEAD, to be retargeted once the wave lands.
+`fleet-executor`, `x402`, `settlement`, `fleet-paymaster` and the g4c `TollRegistry` are on-chain (each
+a nonce-0 single `CREATE` from its own key; all five runtime reads cold via `eth_getCode`). Those five
+`src/` trees reproduce the deployed runtime: a fresh `forge build` here hashes byte-identical to the
+live code (FleetPaymaster raw-differs only in its `entryPoint` immutable slots, which a compile leaves
+zeroed — right-align-patched, the keccak matches exactly). `fees` and `rails` are still source-only, and
+the nine `main` products carry their own `v2` branch; this branch is HEAD for the wave-1 seven.
 
 Each product carries `foundry.toml`, `remappings.txt`, `src/`, `test/`, plus `script/Deploy.s.sol` and
 its own `README.md`/`MANIFEST.md`/key-record where present. `out/`, `cache/`, `broadcast/` and `.env`
