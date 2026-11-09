@@ -1,8 +1,9 @@
 # dex-contracts
 
-The Solidity source of nine contract products **live on Base mainnet (chain 8453)**. Published so
-anyone can verify the deployed code: compile each product with standard settings and the runtime
-reproduces the on-chain bytecode.
+The Solidity source of nine contract products **live on Base mainnet (chain 8453)** and, for the
+core factories, byte-identically across eight further chains (see "Multi-chain footprint" below).
+Published so anyone can verify the deployed code: compile each product with standard settings and the
+runtime reproduces the on-chain bytecode.
 
 - **License:** MIT (see `LICENSE`).
 - **Compiler:** `solc 0.8.34`, optimizer on (`runs = 200`), `evm_version = cancun`, default IPFS
@@ -47,6 +48,40 @@ p3 Router                    0x19c987eab0287a4d158a0efbc34a75b12d2b8cb4b115782cb
 p3c P3cDelegate              0xd539adeb7a7ecf3921676c6dc5f83f78b182178fbc20aad6adbe0b7c9c65a045
 f1c DustSweeper              0xff12d4f7171202d9fe97c7aafc1a16e014469353ee7eb5fb6ca3dc324e5a3f84
 ```
+
+## Multi-chain footprint — same runtime, same keccak
+
+The nine Base deployments above are **not Base-only**. The g2b EscrowFactory runtime is replicated
+byte-identically (`keccak 0x3394a7f223542a1480e22c131f48b02a1c1eee09859be5831b774d43e785aedb`, 7,794 B)
+on **eight further chains**, and the g2a StreamFactory (`0x6dfe06ec…1afb7`, 9,385 B) on four of them.
+`CREATE` addresses are a function of (deployer key, nonce) and **chain-independent**, so each key/nonce
+group landed at one address everywhere; `owner() == feeRecipient()` is the orphan treasury
+`0xe218E382F28A094f9f64E903ee3cb1750A7f204B` on every site. Every code read below was taken cold
+(`eth_getCode`, ≥1 independent RPC per chain) and matches the Base reference keccak **exactly**.
+
+| chain | chainId | g2b EscrowFactory | g2a StreamFactory |
+|---|---:|---|---|
+| Base (native deploy) | 8453 | `0x80793a7d35f735bc76BeAf22B1f413926818f410` | `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` |
+| Optimism | 10 | `0x80793a7d35f735bc76BeAf22B1f413926818f410` | `0x61AB1942a6779D392922cfcd20BA6D7dc36FDe15` |
+| opBNB | 204 | `0x715114076a45c0102Ae3cb38Bcb89B3211ce591f` | `0xAdB743dA4A5419C62BCc2cF027da6478Ae70f228` |
+| Gnosis | 100 | `0x715114076a45c0102Ae3cb38Bcb89B3211ce591f` | `0xAdB743dA4A5419C62BCc2cF027da6478Ae70f228` |
+| Scroll | 534352 | `0x715114076a45c0102Ae3cb38Bcb89B3211ce591f` | `0xAdB743dA4A5419C62BCc2cF027da6478Ae70f228` |
+| Celo | 42220 | `0x809c4054292550405509373afb1605eCE7200D3D` | — |
+| Avalanche C-Chain | 43114 | `0x809c4054292550405509373afb1605eCE7200D3D` | — |
+| Monad | 143 | `0x809c4054292550405509373afb1605eCE7200D3D` | — |
+| Robinhood Chain | 4663 | `0x809c4054292550405509373afb1605eCE7200D3D` | — |
+
+The three distinct EscrowFactory addresses are the same `CREATE` at three (key, nonce) pairs —
+**g2b key nonce 0** for Base/OP, **orphan nonce 3** for opBNB/Gnosis/Scroll, **orphan nonce 0** for the
+four 2026-11-09 chains. Group members share an address because they share the key+nonce, not by hand.
+`p4-atomic` (SHA-256 escrow) has a sibling port on opBNB / Gnosis / Scroll at
+`0x8D794b5d0e3BCB22706C1198fa65F0C837bdd893`.
+
+**Fee is live state, read per site (#162).** `feeBps()` currently reads **500** on Base/OP/opBNB/
+Gnosis/Scroll and **25** on Celo/Avalanche/Monad/Robinhood (raised vs. the deploy-time literal; all
+`MAX_FEE_BPS == 500`, owner == orphan, so a one-tx `setFeeBps` closes any gap). Deploy receipts and the
+full cold readback: `products/g2b-escrow/MULTICHAIN-DEPLOY-EVIDENCE.md`,
+`products/g2b-escrow/RECEIPTS-chain-wave-2026-11-09.md`.
 
 ## The two IMM cases — decoded immutable args
 
