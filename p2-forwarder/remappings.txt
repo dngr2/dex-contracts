@@ -1,1 +1,2 @@
-@shared/=../shared/
+forge-std/=lib/forge-std/src/
+@shared/=../shared/src/

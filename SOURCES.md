@@ -21,7 +21,7 @@ So this tree carries the **pre-refactor** revision:
 
 **Proof it is the right revision, not a stale copy:** the live p2 Registry has **no** `minFee()`
 selector in its runtime (selector scan of the deployed code), and recompiling the pre-refactor source
-in this tree reproduces the live runtime exactly (metadata-normalized). `shared/FeeMath.sol` is
+in this tree reproduces the live runtime exactly (metadata-normalized). `shared/src/FeeMath.sol` is
 included for reference (it is what HEAD calls); it is **not** linked into any deployed bytecode here.
 
 ## Settings (every product)

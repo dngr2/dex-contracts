@@ -3,6 +3,7 @@ pragma solidity 0.8.34;
 
 import {StreamVault} from "./StreamVault.sol";
 import {IStreamFactory} from "./interfaces/IStreamFactory.sol";
+import {IERC20} from "./interfaces/IERC20.sol";
 
 /// @title StreamFactory — the only contract a payer calls
 /// @notice `createStream(recipient, token, amount, start, end)` funds a per-stream StreamVault that
@@ -147,6 +148,11 @@ contract StreamFactory is IStreamFactory {
     event MandateSet(address indexed payer, address indexed recipient, address token, uint256 ticket, uint64 period, uint32 laps);
     event MandateCleared(address indexed payer, address indexed recipient);
     event HedgeReset(address indexed payer, address indexed recipient, address token);
+    /// @dev DEAD-DROP FIX — the factory can now RECEIVE bare value and MOVE its own balance. `Funded`
+    ///      fires on any bare native send (mirrors the vault's `Deposit` shape); `Rescued` fires when
+    ///      the owner draws the factory's own held balance out to `to`.
+    event Funded(address indexed from, address token, uint256 amount);
+    event Rescued(address indexed token, address indexed to, uint256 amount);
 
     error NotOwner();
     error BadFee();
@@ -216,6 +222,38 @@ contract StreamFactory is IStreamFactory {
         uint64 start,
         uint64 end
     ) public payable returns (address vault) {
+        return _create(payer, recipient, token, amount, start, end, false);
+    }
+
+    /// @notice Same as `createStreamFor`, but funded from the FACTORY's OWN balance (not a pull from
+    ///         `payer`). This is the self-fund leg of the dead-drop fix: tokens/native that were sent
+    ///         to the factory BY MISTAKE can be turned straight into a stream, instead of first being
+    ///         rescued to an EOA and re-approved. `payer`/auth semantics are IDENTICAL (same reel
+    ///         identity: same mandate/hedge gate, same salt/nonce), so own-balance funding is not a
+    ///         mandate-bypass either. For native, send 0 value (the factory already holds it).
+    /// @dev Reverts with "pull failed"-class if the factory does not actually hold `amount`.
+    function createStreamSelfFunded(
+        address payer,
+        address recipient,
+        address token,
+        uint256 amount,
+        uint64 start,
+        uint64 end
+    ) public payable returns (address vault) {
+        return _create(payer, recipient, token, amount, start, end, true);
+    }
+
+    /// @dev The shared create path. `selfFund` selects the funding SOURCE only; every validation, the
+    ///      mandate/hedge gate, the CREATE2 derivation and the event are identical either way.
+    function _create(
+        address payer,
+        address recipient,
+        address token,
+        uint256 amount,
+        uint64 start,
+        uint64 end,
+        bool selfFund
+    ) internal returns (address vault) {
         if (paused) revert Paused();
         if (payer == address(0) || recipient == address(0)) revert ZeroArg();
         if (amount == 0) revert ZeroArg();
@@ -243,7 +281,8 @@ contract StreamFactory is IStreamFactory {
         }
 
         if (token == address(0)) {
-            if (msg.value != amount) revert FundingFailed();   // exact, so no stranded dust
+            // self-fund: the factory already holds the native, so msg.value must be 0 (no double-fund).
+            if (selfFund ? (msg.value != 0) : (msg.value != amount)) revert FundingFailed();
         } else if (msg.value != 0) {
             revert FundingFailed();
         }
@@ -257,12 +296,14 @@ contract StreamFactory is IStreamFactory {
         address created = _deploy(s.salt, initCode);
         if (created != vault) revert DeployFailed();   // parity pin: derivation must match CREATE2
 
-        // Fund the vault — the factory holds nothing.
+        // Fund the vault — the factory holds nothing AFTER this (except accidental sends: see rescue).
         if (token == address(0)) {
             (bool ok, ) = payable(vault).call{value: amount}("");
             if (!ok) revert FundingFailed();
+        } else if (selfFund) {
+            _send(token, vault, amount);               // spend the factory's OWN balance
         } else {
-            _pullFunds(token, payer, vault, amount);
+            _pullFunds(token, payer, vault, amount);   // pull the payer's approved allowance
         }
 
         streamsOf[payer].push(vault);
@@ -318,6 +359,76 @@ contract StreamFactory is IStreamFactory {
         (bool ok, bytes memory ret) =
             token.call(abi.encodeWithSelector(0x23b872dd, from, to, amount));   // transferFrom
         require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "pull failed");
+    }
+
+    /// @dev DEAD-DROP FIX (the "accepts value, cannot move its own balance" shape).
+    ///
+    ///      THE HOLE: `createStreamFor` funds by PULL (`transferFrom` straight to the VAULT) and the
+    ///      factory holds nothing by design — so a naive integrator reading "the factory is funded by
+    ///      transfer" does the intuitive thing and does `USDC.transfer(factory, x)` (or sends native).
+    ///      That SUCCEEDS on the ERC20 side (the token credits the factory) and the factory can never
+    ///      move it: there was no `receive()`/`fallback()`, and no function touching
+    ///      `address(this).balance`/its own token balance. v1 stranded 5.01 USDC this way
+    ///      (`0x2bB5b763…`, live-proven); v2 carried the SAME latent hole.
+    ///
+    ///      THE FIX, two halves, both additive:
+    ///        1. `receive()`/`fallback()` — a bare native send NO LONGER reverts. A `.transfer()`
+    ///           stipend (2300 gas) works because this is a FULL contract, not a clone (same measured
+    ///           reason the vault/forwarder give — see StreamVault header; a clone's receive runs via
+    ///           DELEGATECALL and cold-loads over the stipend).
+    ///        2. `rescue(token, to) onlyOwner` — moves the factory's OWN balance out. `token ==
+    ///           address(0)` moves native; anything else moves that ERC20. Owner-only because the
+    ///           factory's own balance is operator-fungible funds, not a per-stream escrow.
+    ///
+    ///      WHY `rescue` IS NOT A MANDATE-BYPASS: rescue spends the factory's OWN held balance, which
+    ///      is SEPARATE from the payer's allowance (`transferFrom` pulls payer→vault directly, never
+    ///      through the factory). So rescuing can never touch a stream's money — it only clears what
+    ///      was sent TO the factory by mistake. It is a toolless-last-resort; the RIGHT integration
+    ///      stays `approve(factory) + createStream`, which pulls straight to the vault.
+    ///
+    ///      STORAGE: rescue adds NO new storage slot (reads live balances only), so a v1→v2→v2.1
+    ///      upgrade cannot collide. `receive()` keeps no state at all (a pure event) for the same
+    ///      reason the vault's does — it must survive the 2300-gas stipend, so no SSTORE.
+    receive() external payable {
+        emit Funded(msg.sender, address(0), msg.value);
+    }
+
+    fallback() external payable {
+        emit Funded(msg.sender, address(0), msg.value);
+    }
+
+    /// @notice Move the FACTORY's own held balance of `token` to `to`. `token == address(0)` = native.
+    /// @dev Owner-only. Irreversible (no re-entry guard needed: it reads `_balance` once and forwards).
+    ///      Tolerance: native uses a full `call` (not `.transfer()`), so a contract `to` that needs
+    ///      more than the 2300 stipend still works. ERC20 uses the USDT-class safe rule.
+    function rescue(address token, address to) external onlyOwner returns (uint256 amount) {
+        if (to == address(0)) revert ZeroArg();
+        amount = _balance(token);
+        if (amount == 0) return 0;
+        _send(token, to, amount);
+        emit Rescued(token, to, amount);
+    }
+
+    /// @dev THIS factory's own balance of `token` (0 for a non-contract token address, like the vault's
+    ///      `__urndata` trick — a codeless token answers 0, not a revert).
+    function _balance(address t) internal view returns (uint256 b) {
+        if (t == address(0)) return address(this).balance;
+        (bool ok, bytes memory d) = t.staticcall(abi.encodeWithSelector(IERC20.balanceOf.selector, address(this)));
+        if (ok && d.length >= 32) return abi.decode(d, (uint256));
+        return 0;
+    }
+
+    /// @dev Native via `call{value}` (full gas, not the 2300 stipend) — same rule as the vault's `_pay`.
+    ///      ERC20 via the USDT-class safe rule (empty return == ok). `virtual` so a negcontrol can
+    ///      re-inject the "send reverts" bug through the REAL rescue path.
+    function _send(address t, address to, uint256 v) internal virtual {
+        if (t == address(0)) {
+            (bool ok, ) = payable(to).call{value: v}("");
+            require(ok, "native send failed");
+        } else {
+            (bool ok, bytes memory ret) = t.call(abi.encodeWithSelector(IERC20.transfer.selector, to, v));
+            require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "erc20 transfer failed");
+        }
     }
 
     // ---- admin ----
