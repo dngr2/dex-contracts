@@ -7,20 +7,26 @@ reproduces the on-chain bytecode.
 - **License:** MIT (see `LICENSE`).
 - **Compiler:** `solc 0.8.34`, optimizer on (`runs = 200`), `evm_version = cancun`, default IPFS
   metadata. Each product has its own `foundry.toml`. `forge build` inside a product dir is enough —
-  no external libraries.
-- **What revision:** the **deployed-matching** source, which predates a later shared-`FeeMath`/`minFee`
-  refactor. Read `SOURCES.md` first — it names the delta exactly.
+  only a `remappings.txt` and the repo-root `shared/` are needed, no external libraries.
+- **What revision:** this branch is the **v2** audit-fixed source (the deployed set — see below). The
+  **v1** source is on `main`, still live at its own addresses; the delta is in `SOURCES.md` and the
+  retired addresses are in `HISTORY.md`.
 
-> **On `main` = deployed-matching (the live Base bytecode). On the `v2` branch = the audit-fixed
-> source, NOT YET DEPLOYED — with ONE exception: the g2a-streams `v2.1` dead-drop fix IS live.**
-> See "## `v2` branch — audit fixes, not yet deployed" at the bottom.
-> `main` repoints only when the fixes actually go on chain (new addresses).
+> **Both revisions are live.** `main` = the **v1** deployed source (still on chain at the addresses in
+> its table, still serving — superseded, not retired). The **`v2` branch** = the audit-fixed source,
+> now **DEPLOYED for all nine products** at separate Base addresses (the `v2` table below). The
+> published site points at the `v2` addrs. `main` repoints only at a deploy, and no v1 address is
+> retired while it still serves — so neither branch is "the" live set: `main` = v1, `v2` = v2.
+> See "## `v2` branch — DEPLOYED" at the bottom.
 
-## Live contracts → source → byte-match
+## Live contracts → source → byte-match — the **v1** set (also on `main`)
 
-Everything below was checked cold: fetch the live runtime with `eth_getCode`, strip the CBOR metadata
-trailer, compare against a fresh compile of the source in this repo. Two independent RPCs
-(`mainnet.base.org`, `base-rpc.publicnode.com`) agreed byte-for-byte on every runtime before comparing.
+These nine are the **v1** revision, still live at the addresses shown. (The audit-fixed **v2** set —
+also live, at different addresses — is the table under "`v2` branch — DEPLOYED" at the bottom; that is
+what the published site points at.) Everything below was checked cold: fetch the live runtime with
+`eth_getCode`, strip the CBOR metadata trailer, compare against a fresh compile of the source in this
+repo. Two independent RPCs (`mainnet.base.org`, `base-rpc.publicnode.com`) agreed byte-for-byte on
+every runtime before comparing.
 
 | product | role | live address (Base) | source | verdict |
 |---|---|---|---|---|
@@ -53,7 +59,7 @@ p3c P3cDelegate              0xd539adeb7a7ecf3921676c6dc5f83f78b182178fbc20aad6a
 f1c DustSweeper              0xff12d4f7171202d9fe97c7aafc1a16e014469353ee7eb5fb6ca3dc324e5a3f84
 ```
 
-## The two IMM cases — decoded immutable args
+## The two v1 IMM cases — decoded immutable args
 
 - **p3-router / Router** — `constructor(uint256 feeBps_, address treasury_)`. Live `feeBps = 5`,
   `treasury = 0xe218E382F28A094f9f64E903ee3cb1750A7f204B`. The contract is otherwise immutable:
@@ -75,6 +81,7 @@ in this tree predates it and inlines the same arithmetic (see `SOURCES.md`). `p4
  g4b-receipts|p3-router|f1c-duster|p3c-7702|fees>/   each: foundry.toml + src/
 shared/src/FeeMath.sol                          reference (HEAD's shared toll)
 SOURCES.md   deployed-vs-HEAD delta + verdict legend + settings
+HISTORY.md   retired/superseded addresses (v1, multi-chain fans)
 LICENSE      MIT
 ```
 
@@ -84,37 +91,41 @@ the g2b copy vendored for g4b fork tests live under each product's own `src/inte
 
 `fees/` carries `FeeSplitter` + `ReferralRegistry` — the fee-split pair, **live on Base** at
 `0x2D30BbFc9C60BF1E85594305D2BC190c6A71832E` / `0x88739a5e4f608c9427F2867c5d5d8bb2bea3AE0B`. Both
-reproduce `FULL` from this tree.
+reproduce `EXACT` from this tree.
 
-## `v2` branch — audit fixes, mostly NOT YET DEPLOYED
+## `v2` branch — audit fixes, DEPLOYED
 
-`v2` is the working tree after the v2 audit-fix pass. With ONE exception it is **not** deployed: on the
-live Base factory `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` every v2 selector reverts (`setMandate(address,address,uint256,uint64,uint32,uint64) 0x88f67583`,
-`setKeeper(address,bool) 0xd1b9e853`, `mandate(address,address,address) 0x823ed2d8`, `hedgeEnd(address,address,address) 0xe08ec7d3`), so the live runtime is still the
-pre-v2 code and `main` stays the deployed-matching revision. Read this section as "what will ship",
-not "what is on chain".
+`v2` is the source after the v2 audit-fix pass, and it is **live**: all nine products were deployed to
+Base at fresh addresses — the table below. These are the addresses the published site points at, so this
+branch, not `main`, is the canonical live set. `main` stays the **v1** revision (still on chain at its
+own addresses; superseded, not retired).
 
-**Exception — g2a-streams `v2.1` IS live.** The dead-drop fix shipped as a fresh `StreamFactory` at
-`0x8f26d7a5C89B6b8BE712346c5465b7F50e84fa19` (Base, runtime keccak
-`0xa4798afcb277754b4bc6232981f29bb569a84d0801f455ff0a8ab79e2b3a6761`, Sourcify `exact_match`) — see
-`g2a-streams/DEPLOY-EVIDENCE-v2.1.md`. That product's `src/` here reproduces the live v2.1 runtime
-byte-for-byte, metadata included (`FULL`). Nothing else has shipped.
+The nine v1 Base factories are still up and are a **different bytecode** from these: the v1 g2a factory
+`0x2bB5b763a8A85e446909674177e65cb6F1052b4F` has none of the v2 selectors
+(`setMandate(address,address,uint256,uint64,uint32,uint64) 0x88f67583`, `setKeeper(address,bool) 0xd1b9e853`,
+`mandate(address,address,address) 0x823ed2d8`, `hedgeEnd(address,address,address) 0xe08ec7d3`), i.e. it is genuinely the pre-v2 code —
+which is why `main` (v1) and `v2` are two live revisions, not one.
 
-Same settings as `main` (`solc 0.8.34`, optimizer 200, cancun). Verified: all eight products below
+Same settings as `main` (`solc 0.8.34`, optimizer 200, cancun). Verified: all nine products below
 `forge build` clean **standalone inside this tree**.
 
-### The one new mapping
+### The `remappings.txt` — load-bearing, per product
 
-`g2a-streams`, `g2b-escrow`, `p2-forwarder` now import the shared toll library as
-`@shared/FeeMath.sol`. Each of those three ships a `remappings.txt`:
+`g2a-streams`, `g2b-escrow`, `p2-forwarder`, `f1a-payment-links` import the shared toll library as
+`@shared/FeeMath.sol`, and each ships:
 
 ```
 @shared/=../shared/src/
 ```
 
 so `../shared/src/FeeMath.sol` (the file already at the repo root) resolves without vendoring a second
-copy. The `src/` path spelling is load-bearing: it is what the deployed v2.1 was compiled with, so it is
-also what reproduces the v2.1 runtime's metadata hash exactly.
+copy. The `src/` path spelling is load-bearing — it is what the deployed code was compiled with.
+
+Separately, **every** product here ships a `forge-std/=lib/forge-std/src/` line. Foundry auto-injects
+that remap into the solc metadata JSON **only when `lib/forge-std` is present**; the live bytecode was
+built with it embedded, so a bare clone (no `lib/`) needs the line written explicitly or the metadata
+hash — and so the codehash — comes out different (BODY, not the full match). Confirm with
+`forge build --force` then `cast code` on the live address: the compiled keccak must equal the live one.
 
 ### What v2 changes, per product
 
@@ -138,26 +149,33 @@ also what reproduces the v2.1 runtime's metadata hash exactly.
 install` step. `src/` for every other product stays `src/`-only as before. `DEPLOY-EVIDENCE-v2.1.md`
 records the live v2.1 deploy and the `FULL` byte-match.
 
-### Live-vs-repo reconciliation (what `v2` now carries)
+### Live-vs-repo reconciliation — the nine v2 deployments
 
-Every contract we have **live on Base** was codehash-checked against this tree (fetch `eth_getCode`,
-keccak the runtime, match against a fresh compile of the source here — same settings as `main`). Rows
-below are the v2-revision live contracts; each is reproduced from the source in this branch:
+Every v2 product's `src/` here was compiled (settings above) and its `deployedBytecode` was matched
+against the **live v2 runtime** fetched with `eth_getCode`. Verdicts are **measured**, not asserted:
+`EXACT` = compiled bytecode byte-identical to the live runtime, metadata trailer included; `IMM(n)` =
+identical after zeroing the `n` constructor-set immutable slots (the only differing bytes — the live
+values are the recorded deploy args). Compiled length == live length in every row. `SUPERSEDED v1`
+names the still-live pre-v2 address the same product previously occupied (see `main`).
 
-| contract | live addr (Base) | live B | repo source | repr |
-|---|---|---|---|---|
-| g2a StreamFactory v2.1 | `0x8f26d7a5C89B6b8BE712346c5465b7F50e84fa19` | 16,643 | `g2a-streams/src/StreamFactory.sol` | FULL |
-| g2b EscrowFactory v2 | `0x1826C89228f3A4D0ec8f437CFdd55a02D165F1ba` | 10,425 | `g2b-escrow/src/EscrowFactory.sol` | FULL |
-| p2 Registry v2 | `0xaC13a6f51E886dDE81bB4692839987E6d41E1940` | 6,303 | `p2-forwarder/src/Registry.sol` | FULL |
-| f1c DustSweeper v2 | `0x4B360a122969ecd726336AdafCf13714F37BF6f1` | 2,166 | `f1c-duster/src/DustSweeper.sol` | FULL |
-| FeeSplitter | `0x2D30BbFc9C60BF1E85594305D2BC190c6A71832E` | 3,547 | `fees/src/FeeSplitter.sol` | FULL |
-| ReferralRegistry | `0x88739a5e4f608c9427F2867c5d5d8bb2bea3AE0B` | 1,199 | `fees/src/ReferralRegistry.sol` | FULL |
-| f1a RequestRegistry v2 | `0x3d0e1af04b3317cf9aeeec45e43de92c34684041` | 2,904 | `p2-forwarder/src/RequestRegistry.sol` | IMM |
-| p3 Router v2 | `0x3962846445C386294B98a7770AF17192cb159447` | 4,325 | `p3-router/src/Router.sol` | IMM |
+| product | v2 live addr (Base) | live B | repo source | verdict | SUPERSEDED v1 |
+|---|---|---|---|---|---|
+| p2 Registry | `0xaC13a6f51E886dDE81bB4692839987E6d41E1940` | 6,303 | `p2-forwarder/src/Registry.sol` | EXACT | `0xe9515881fe6976eD9CB55328B8308F6eF7c311a8` |
+| f1a RequestRegistry | `0x3d0e1aF04B3317CF9aeeeC45E43De92c34684041` | 2,904 | `f1a-payment-links/src/RequestRegistry.sol` | IMM(3) | `0x9651cD591cFe33E1b684e5d8541940e78724c749` |
+| g2b EscrowFactory | `0x1826C89228f3A4D0ec8f437CFdd55a02D165F1ba` | 10,425 | `g2b-escrow/src/EscrowFactory.sol` | EXACT | `0x80793a7d35f735bc76BeAf22B1f413926818f410` |
+| g4b ReceiptNFT | `0x5F02a21C63A1115D49456F440EF69FBd57a61580` | 12,026 | `g4b-receipts/src/ReceiptNFT.sol` | EXACT | `0x6d140b934a06410a8C36eEe926c967467ab6d46f` |
+| g2a StreamFactory | `0x8f26d7a5C89B6b8BE712346c5465b7F50e84fa19` | 16,643 | `g2a-streams/src/StreamFactory.sol` | EXACT | `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` |
+| g3a SponsorTarget | `0xb8381fF6b76726e989a7FFF358dBc3640d78d684` | 2,075 | `g3a-sponsorship/src/SponsorTarget.sol` | EXACT | `0x83303e59d4F9798C3B49f9D4C6E522FfeC05f2A5` |
+| p3c P3cDelegate | `0xDE6B56287edc66212037D2B7Af21c0825AA7AdC9` | 2,714 | `p3c-7702/src/P3cDelegate.sol` | EXACT | `0x70744664505D07B3e7A20B14665211b22176029E` |
+| p3 Router | `0x3962846445C386294B98a7770AF17192cb159447` | 4,325 | `p3-router/src/Router.sol` | IMM(4) | `0xEB28D5cA0783D01dd2E4bF86AD7024ca156aB047` |
+| f1c DustSweeper | `0x4B360a122969ecd726336AdafCf13714F37BF6f1` | 2,166 | `f1c-duster/src/DustSweeper.sol` | EXACT | `0x5F6f5dee0c371ed13D9151B9C64d9fBf30245800` |
 
-`repr` legend: **FULL** = compiled `deployedBytecode` byte-identical to the live runtime, metadata
-included. **IMM** = identical after zeroing the constructor-set immutable slots (the only differing
-bytes); the live values are the deploy args. In every row above compiled length == live length.
+The two IMM rows are the only two with constructor args: `f1a RequestRegistry(p2Registry=v2 p2, owner)`
+and `p3 Router(feeBps=5, treasury=0xe218E382F28A094f9f64E903ee3cb1750A7f204B)`. Every address above was
+read cold from the LANDED table in `exec3/DEPLOY-PLAN-v2.md` + KEY-RECORD and then code-probed; the
+site points at these. The fee-split pair `FeeSplitter` / `ReferralRegistry` is live at
+`0x2D30BbFc9C60BF1E85594305D2BC190c6A71832E` / `0x88739a5e4f608c9427F2867c5d5d8bb2bea3AE0B` (both
+`EXACT` from `fees/src/`).
 
 ### Correction to the "deployed-matching" scope
 
