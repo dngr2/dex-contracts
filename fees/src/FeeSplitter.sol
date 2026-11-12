@@ -46,6 +46,7 @@ contract FeeSplitter is IFeeSplitter {
     error NotOwner();
     error BadBps(uint16 bps);
     error ZeroTreasury();
+    error ZeroOwner();
     error TransferFromFailed();
     error NativeClaimFailed();
     error TokenClaimFailed();
@@ -63,9 +64,12 @@ contract FeeSplitter is IFeeSplitter {
         _locked = 1;
     }
 
-    constructor(address _treasury) {
+    constructor(address _treasury, address _owner) {
         if (_treasury == address(0)) revert ZeroTreasury();
-        owner = msg.sender;
+        if (_owner == address(0)) revert ZeroOwner();
+        // NOTE: NOT msg.sender — under CREATE2 msg.sender is the deterministic-deployment proxy
+        // (0x4e59b448…), a keyless contract. Pass the intended EOA explicitly.
+        owner = _owner;
         treasury = _treasury;
     }
 

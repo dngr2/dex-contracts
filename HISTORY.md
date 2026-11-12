@@ -40,3 +40,25 @@ f1a settle path). `main` repoints only at a deploy; nothing is retired while it 
   balance). v1 has no `rescue` and is **not a proxy**, so it cannot be recovered in place — write-off.
   Fixed in v2.1 (`receive`/`fallback` + `rescue` + `createStreamSelfFunded`). See
   `g2a-streams/DEPLOY-EVIDENCE-v2.1.md` and the fleet dead-drop audit.
+
+## The v2.2 relaunch supersession (2026-11-12)
+
+The relaunch fired on **new keys** (`0x75d551aD…4900` deployer, `0x038d7B32…1caE` owner) via the
+Arachnid CREATE2 proxy, so the two defect-carrying contracts below are replaced at new, chain-invariant
+addresses rather than repaired in place (a splitter's `owner` is not settable in bytecode):
+
+| product | dead/defective address | why | superseded by |
+|---|---|---|---|
+| fees FeeSplitter | `0x6f41cc92f3c328c47eef887a94bd33404395b919` | **admin-dead** — 2-arg ABI fired with one arg, so `_owner` decoded from the metadata tail; `owner()` == the CREATE2 proxy, which can never send a tx. `treasury()` correct, accrual works, no fee setter ever reachable. | `0x7cacbecbd2e13521ea01ebd049551db31e9caf1b` |
+| p3-router Router | `0xf94c1d820fa4de40d6cf9f05ca2dd445282e38dd` | p3c-lineage build (4,325 B) with no `rescue`; ownerless by design, so a short-pulling venue stranded balances permanently. | `0x036645ca607dc8075ae9b12a3474c00a82c306e6` (4,773 B, rescue + rescueable) |
+
+Both are **Base-only** duplicates from the first fan; OP and Unichain never received either. Both are
+still on chain and still answering — nothing here is a self-destruct. Nothing indexed either address at
+the time of writing: a repo-wide search over page/source/JSON surfaces for `6f41cc92` and `f94c1d82`
+returns **0 hits**, and the v2 table's splitter/router rows (and `dex-site/OPS.json`) name
+`0x2D30BbFc…` / `0x39628464…`, which are the correct **v2** contracts of their generation, not these
+two. The v2 contracts remain live and are the ones to keep pointing at until the site is repointed.
+
+**Two-arg ctor note.** `FeeSplitter(treasury, owner)` deliberately does NOT read `owner = msg.sender`.
+Under CREATE2 the sender is the proxy, so a one-arg build is silently admin-dead on the first deploy;
+this is GOTCHA #229. `fees/script/Deploy.s.sol` now takes `OWNER` and asserts `owner() == owner_`.

@@ -183,3 +183,64 @@ site points at these. The fee-split pair `FeeSplitter` / `ReferralRegistry` is l
 **replicated across 8 further chains at the same addresses** (plain `CREATE`, address = f(deployer,
 nonce), chain-independent) — same runtime keccak `0x3394a7f2…aedb`. The address table on `main` lists
 only the Base addresses; the multi-chain footprint is the same nine, nine times.
+
+---
+
+## `v2.2` — the RELAUNCH line (new keys, new addresses, 2026-11-12)
+
+The user directive was: pause/freeze everything, drain, then redeploy **new addresses, new private
+keys, new contracts** and keep the new keys out of the public repos. That relaunch line is what the
+`v2` branch's `fees/src/FeeSplitter.sol` and `p3-router/src/Router.sol` now match, and it is **live**:
+
+- **FeeSplitter `0x7cacbecbd2e13521ea01ebd049551db31e9caf1b`** — the two-arg ctor `(treasury, owner)`.
+  The earlier one-arg build made `owner = msg.sender`, and under CREATE2 `msg.sender` is the
+  deterministic-deployment proxy `0x4e59b448…` — a keyless contract with no tx path, so the splitter
+  was **admin-dead**. Supersedes `0x2D30BbFc…832E` (v2) and `0x6f41cc92…b919` (the mis-arg'd first
+  v2.2 attempt, same defect).
+- **Router `0x036645ca607dc8075ae9b12a3474c00a82c306e6`** — adds permissionless `rescue(address)` to the
+  immutable `treasury`, plus `rescueable(address)`. The Router is deliberately ownerless, so a
+  short-pulling venue (L-1) previously stranded balances with **no** exit at all. Supersedes
+  `0x39628464…9447` (v2) and `0xf94c1d82…8dd` (v2, p3c build).
+
+### The relaunch set — all 13, live on Base (8453), OP (10) and Unichain (130)
+
+Plain `CREATE` was swapped for **CREATE2** through the canonical Arachnid proxy
+`0x4e59b44847b379578588920cA78FbF26c0B4956C`, so every address below is **chain-invariant** and
+identical on all three chains at identical bytes. Salt = `keccak("dexline-v1:<Name>")`.
+
+**Arbitrum (42161) is NOT deployed** (wave 2, funding) — those addresses read `0x` there.
+
+| product | role | address (identical per chain) | source |
+|---|---|---|---|
+| p2-forwarder | Registry — deposit-address forwarder factory | `0x417c41d406c61e09958032cd77338fc1f1ac7d45` | `p2-forwarder/src/Registry.sol` |
+| f1a-payment-links | RequestRegistry — payable-request links | `0xed395024bba719564bec617b6b42cf6fdc8a252c` | `f1a-payment-links/src/RequestRegistry.sol` |
+| g2a-streams | StreamFactory **v2.1** — stream factory | `0x3882a049ee99b96ea68df317713ed76008b9a075` | `g2a-streams/src/StreamFactory.sol` |
+| g2b-escrow | EscrowFactory — hashlock escrow factory | `0x4b05fa6ad0ba0d0120dce19ce34dde6d1316c237` | `g2b-escrow/src/EscrowFactory.sol` |
+| g4b-receipts | ReceiptNFT — ERC-721 settlement receipt | `0xae5951d25fedd06ab7e124e91dac3ac20f5e7caf` | `g4b-receipts/src/ReceiptNFT.sol` |
+| fees | FeeSplitter **v2.2** | `0x7cacbecbd2e13521ea01ebd049551db31e9caf1b` | `fees/src/FeeSplitter.sol` |
+| p3-router | Router **v2.2** — fee-on-input DEX router | `0x036645ca607dc8075ae9b12a3474c00a82c306e6` | `p3-router/src/Router.sol` |
+| g4c-toll-registry | TollRegistry | `0xc8319d6fbc0a8f1685df9c567557141a289b7a1b` | upstream tree (not vendored here) |
+| f1c-duster | DustSweeper — dust → native sweeper | `0x8c38c2bbECa7575c24ACEf1d907Aa1F4f43CbFB9` | `f1c-duster/src/DustSweeper.sol` |
+| fleet-executor | FleetExecutor | `0x410396662089a26C801c54818CCd59640eFCaf77` | upstream tree (not vendored here) |
+| fleet-paymaster | FleetPaymaster | `0x70a615ddc4cd013cf4d569ae3394bf4465229b95` | upstream tree (not vendored here) |
+| x402 | x402Facilitator | `0x5849ef6f21fdc21d5194c24ed6c824965a613739` | upstream tree (not vendored here) |
+| settlement | SettlementRegistry | `0xdda0728ff635b555d2af471e2821055be08f9127` | upstream tree (not vendored here) |
+
+Constructor immutables were read back on chain, not assumed: RequestRegistry `p2Registry()` →
+`0x417c41d4…`, Router `feeBps()==500` / `treasury()==0x5c0fc091…`, FleetPaymaster `entryPoint()` →
+the canonical v0.7. Every `owner()` is the new owner `0x038d7B32…1caE`. Cross-verify (39/39 cells
+byte-compared to artifact, 2 RPCs per read) is in the fleet's `REDEPLOY-CROSSVERIFY.md`.
+
+**The two fixed contracts reproduce from this branch.** `FeeSplitter` compiles to **3,547 B** and is
+byte-identical to the live runtime (keccak `0xcdb01e50…b04d04`, no immutables); `Router` compiles to
+**4,773 B** and is identical to the live runtime once the six constructor immutable slots are zeroed
+(keccak `0x77045b92…bb250f`). Both products now vendor `lib/forge-std` v1.17.0 so a bare clone builds
+with no `forge install`.
+
+### The previous (v2) line is still live and still serving
+
+Nothing above retires anything: the v2 addresses in the table further up remain on chain at their own
+addresses and keep answering. `0xaC13a6f5` (p2 v2), `0x1826C892` (g2b v2), `0x39628464` (Router v2) and
+`0x2D30BbFc` (splitter v2) were all live re-probed 2026-11-12. Only the **factories** are paused
+(`g2a` v2 + v2.1, `g2b` v1 + v2); a paused factory still answers its getters and its existing
+vaults/escrows keep releasing.

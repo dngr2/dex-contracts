@@ -30,11 +30,18 @@ import {IAerodromeRouter} from "./interfaces/IAerodrome.sol";
 ///  L-1 (caller-trusted venue; stranded balances are sweepable by anyone). Because `venueRouter` is
 ///     arbitrary, a hop can approve a router that never pulls, or pulls less than `amountIn`. The
 ///     Router keeps NO per-user accounting, so anything left here between calls belongs to nobody in
-///     particular and ANY next caller (via their own swap) can route it out. `amountOutMin` is
-///     checked per-swap, but there is no "rescue" entrypoint. The mitigation is procedural: the
-///     quote engine must re-derive the route fresh each swap (venue swaps are on-chain, not here),
-///     and a per-hop balance-delta measurement (rather than trusting `returned`) would make a
-///     short-pulling router fail loud instead of stranding. Left as-is by design — stated, not fixed.
+///     particular. FIXED (v2): there is now a `rescue(token)` that sweeps a stranded balance to
+///     `treasury` — see L-1-FIX below. The remaining mitigation is still procedural: the quote engine
+///     must re-derive the route fresh each swap (venue swaps are on-chain, not here), and a per-hop
+///     balance-delta measurement (rather than trusting `returned`) would make a short-pulling router
+///     fail loud instead of stranding.
+///
+///  L-1-FIX: `rescue(address token)` is PERMISSIONLESS but the destination is the immutable
+///     `treasury`, so a caller cannot route a stranded balance to themselves. Permissionless is safe
+///     precisely BECAUSE the Router holds nothing between swaps (no per-user accounting): every
+///     balance present when no swap is mid-flight IS stranded, so there is nothing to pick out.
+///     A malicious token's `transfer` cannot reenter into a bad state (rescue reads the balance
+///     first and has no other invariants); the contract keeps no balance that rescue must preserve.
 ///
 ///  5. OWNERSHIP: immutable (proposal, not decided). `feeBps` and `treasury` are fixed at deploy,
 ///     removing the admin-key attack surface entirely. P3b/P3c redeploy anyway. Flipping to
@@ -91,6 +98,9 @@ contract Router {
         uint256 fee,
         uint256 amountOut
     );
+
+    /// @dev L-1-FIX: emitted by `rescue`. `token` indexed for the quote engine's watcher.
+    event Rescued(address indexed token, address indexed to, uint256 amount);
 
     error Expired();
     error EmptyRoute();
@@ -158,6 +168,26 @@ contract Router {
     /// @notice The fee a given input would incur. Convenience for the quote engine / UI.
     function previewFee(uint256 amountIn) external view returns (uint256) {
         return _feeFor(amountIn);
+    }
+
+    /// @notice Sweep a stranded balance of `token` to `treasury`. PERMISSIONLESS — the Router holds
+    ///         nothing between swaps (there is no per-user accounting), so any balance present when
+    ///         no swap is mid-flight is stranded and the fixed destination means a caller cannot
+    ///         divert it. Closes L-1: a short-pulling venue router used to strand tokens with no
+    ///         recovery path at all (the Router is ownerless, so there was no other exit).
+    /// @dev    Native (address(0)) is NOT handled: the Router never holds native — every swap path
+    ///         pulls/returns ERC-20 only, and no `msg.value` is accepted. Kept explicit so the
+    ///         address(0) sentinel cannot be mistaken for the zero address as a real token.
+    /// @return amount the balance that was swept (0 if already empty).
+    function rescue(address token) external returns (uint256 amount) {
+        amount = IERC20(token).balanceOf(address(this));
+        if (amount != 0) _push(token, treasury, amount);
+        emit Rescued(token, treasury, amount);
+    }
+
+    /// @notice View form of `rescue` for a quote engine / UI that wants to preview the sweep.
+    function rescueable(address token) external view returns (uint256) {
+        return IERC20(token).balanceOf(address(this));
     }
 
     // ---------------------------------------------------------------- seams
