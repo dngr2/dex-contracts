@@ -1,8 +1,9 @@
 # g2a-streams — v2.1 DEPLOY EVIDENCE (DEAD-DROP fix, LIVE on Base)
 
-**Status: DEPLOYED.** This is the one product on the `v2` branch whose audit-fixed source has actually
-gone on chain. Every other product under `v2/` is still the not-yet-deployed revision (see README, and
-the STILL-PENDING table below).
+**Status: DEPLOYED.** Written when this was the only product on the `v2` branch whose audit-fixed
+source had gone on chain; every other product has since followed (README `v2` table), so the
+"still pending" framing in the body is historical. `v2.1` itself is now frozen and create-superseded by
+`0x3882a049…`, though the byte-match below stands and remains the way to verify this address.
 
 The `v2` branch carried a **latent dead-drop hole** in `src/StreamFactory.sol`. `v2.1` closes it, and
 the source in this directory **is** the source v2.1 was deployed from — recompiled here it reproduces
@@ -72,10 +73,17 @@ Three legs, each an on-chain receipt; token moves read from `Transfer` logs:
 ## What v2.1 does NOT fix
 
 The **5,010,000 USDC already stranded on v1** stays stranded (v1 is immutable). v2.1 is
-future-immunity. Do not pause v2.1.
+future-immunity.
 
-## Still not deployed from this branch
+**v2.1 is now itself frozen** — `paused()==1` on both live copies (`0x8f26d7a5…` Base, `0x3882A049…`
+OP/Uni, 2026-11-11/12), and superseded as the *create* target by the chain-invariant `0x3882a049…`.
+Pausing gates only `createStreamFor`; every existing vault still pays out, so no position is stranded by
+the pause. "Do not pause v2.1" was written before the relaunch.
 
-`g2b-escrow`, `p2-forwarder`, `g3a-sponsorship`, `g4b-receipts`, `p3c-7702`, `p3-router`,
-`f1c-duster`, `f1a-payment-links` — the `v2` revisions are the not-yet-deployed pass. Their live
-Base bytecode is still the v1/deployed-matching revision carried on `main`.
+## Later revisions from this tree are DEPLOYED
+
+This section was written when v2.1 was the only landed fix. It is now stale as a status claim: the `v2`
+revisions of `g2b-escrow`, `p2-forwarder`, `g3a-sponsorship`, `g4b-receipts`, `p3c-7702`, `p3-router`,
+`f1c-duster` and `f1a-payment-links` all went to Base at fresh addresses (the README's `v2` table), and
+the `v2.2` relaunch line landed chain-invariantly on Base, OP and Unichain. `main` still carries the v1
+/deployed-matching source, and remains the right place to verify the **v1** bytecode.

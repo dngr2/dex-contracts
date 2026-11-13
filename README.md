@@ -8,16 +8,16 @@ reproduces the on-chain bytecode.
 - **Compiler:** `solc 0.8.34`, optimizer on (`runs = 200`), `evm_version = cancun`, default IPFS
   metadata. Each product has its own `foundry.toml`. `forge build` inside a product dir is enough —
   only a `remappings.txt` and the repo-root `shared/` are needed, no external libraries.
-- **What revision:** this branch is the **v2** audit-fixed source (the deployed set — see below). The
-  **v1** source is on `main`, still live at its own addresses; the delta is in `SOURCES.md` and the
-  retired addresses are in `HISTORY.md`.
+- **What revision:** this branch is the **v2** audit-fixed source, now deployed (see below) and itself
+  superseded by `v2.2`. The **v1** source is on `main`, still live at its own addresses; the delta is in
+  `SOURCES.md` and the retired addresses are in `HISTORY.md`.
 
-> **Both revisions are live.** `main` = the **v1** deployed source (still on chain at the addresses in
-> its table, still serving — superseded, not retired). The **`v2` branch** = the audit-fixed source,
-> now **DEPLOYED for all nine products** at separate Base addresses (the `v2` table below). The
-> published site points at the `v2` addrs. `main` repoints only at a deploy, and no v1 address is
-> retired while it still serves — so neither branch is "the" live set: `main` = v1, `v2` = v2.
-> See "## `v2` branch — DEPLOYED" at the bottom.
+> **Both revisions are live, and the relaunch is newer than both.** `main` = the **v1** deployed source
+> (still on chain at the addresses in its table, still serving — superseded, not retired). The **`v2`
+> branch** = the audit-fixed source, **DEPLOYED for all nine products** at separate Base addresses (the
+> `v2` table below) and itself largely superseded by the `v2.2` chain-invariant line at the bottom.
+> `main` repoints only at a deploy, and no address is retired while it still serves — so no branch is
+> "the" live set. Start at "## `v2.2` — the RELAUNCH line" if you want what is newest.
 
 ## Live contracts → source → byte-match — the **v1** set (also on `main`)
 
@@ -70,9 +70,11 @@ f1c DustSweeper              0xff12d4f7171202d9fe97c7aafc1a16e014469353ee7eb5fb6
 
 ## Products not deployed from this tree
 
-`shared/src/FeeMath.sol` is the shared toll library referenced by current upstream `src/`; the live code
+`shared/src/FeeMath.sol` is the shared toll library referenced by current upstream `src/`; the v1 code
 in this tree predates it and inlines the same arithmetic (see `SOURCES.md`). `p4-atomic`
-(SHA-256 escrow, a g2b variant) is built but not yet deployed, so it is out of scope here.
+(SHA-256 escrow, a g2b variant) is built and tested but **not deployed** — the live hashlock escrow is
+the **keccak** g2b factory `0x80793a7d35f735bc76BeAf22B1f413926818f410` (Base + Optimism, both paused),
+so a p4 escrow and a Solana `OP_SHA256` leg cannot open each other. Out of scope for the tables here.
 
 ## Layout
 
@@ -96,9 +98,15 @@ reproduce `EXACT` from this tree.
 ## `v2` branch — audit fixes, DEPLOYED
 
 `v2` is the source after the v2 audit-fix pass, and it is **live**: all nine products were deployed to
-Base at fresh addresses — the table below. These are the addresses the published site points at, so this
-branch, not `main`, is the canonical live set. `main` stays the **v1** revision (still on chain at its
-own addresses; superseded, not retired).
+Base at fresh addresses — the table below. `main` stays the **v1** revision (still on chain at its own
+addresses; superseded, not retired).
+
+**Two of these addresses were superseded by `v2.2`** (see below): the Router `0x39628464…` by
+`0x036645ca…` (rescue added) and the FeeSplitter `0x2D30BbFc…` by `0x7cacbecb…` (2-arg ctor — the
+one-arg build was admin-dead). Both still answer; nothing is retired while it serves. The `v2` g2a
+factory `0x8f26d7a5…` is superseded by the chain-invariant `0x3882a049…`, and **every `v2` factory is
+now `paused()==true`** (froze 2026-11-11) — pausing gates only the create path, so existing vaults and
+escrows keep paying out.
 
 The nine v1 Base factories are still up and are a **different bytecode** from these: the v1 g2a factory
 `0x2bB5b763a8A85e446909674177e65cb6F1052b4F` has none of the v2 selectors
