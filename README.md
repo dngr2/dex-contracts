@@ -80,7 +80,8 @@ so a p4 escrow and a Solana `OP_SHA256` leg cannot open each other. Out of scope
 
 ```
 <p2-forwarder|f1a-payment-links|g2b-escrow|g2a-streams|g3a-sponsorship|
- g4b-receipts|p3-router|f1c-duster|p3c-7702|fees>/   each: foundry.toml + src/
+ g4b-receipts|p3-router|f1c-duster|p3c-7702|fees|x402|settlement|
+ fleet-paymaster>/                              each: foundry.toml + src/
 shared/src/FeeMath.sol                          reference (HEAD's shared toll)
 SOURCES.md   deployed-vs-HEAD delta + verdict legend + settings
 HISTORY.md   retired/superseded addresses (v1, multi-chain fans)
@@ -230,14 +231,48 @@ identical on all three chains at identical bytes. Salt = `keccak("dexline-v1:<Na
 | g4c-toll-registry | TollRegistry | `0xc8319d6fbc0a8f1685df9c567557141a289b7a1b` | upstream tree (not vendored here) |
 | f1c-duster | DustSweeper — dust → native sweeper | `0x8c38c2bbECa7575c24ACEf1d907Aa1F4f43CbFB9` | `f1c-duster/src/DustSweeper.sol` |
 | fleet-executor | FleetExecutor | `0x410396662089a26C801c54818CCd59640eFCaf77` | upstream tree (not vendored here) |
-| fleet-paymaster | FleetPaymaster | `0x70a615ddc4cd013cf4d569ae3394bf4465229b95` | upstream tree (not vendored here) |
-| x402 | x402Facilitator | `0x5849ef6f21fdc21d5194c24ed6c824965a613739` | upstream tree (not vendored here) |
-| settlement | SettlementRegistry | `0xdda0728ff635b555d2af471e2821055be08f9127` | upstream tree (not vendored here) |
+| fleet-paymaster | FleetPaymaster | `0x70a615ddc4cd013cf4d569ae3394bf4465229b95` | `fleet-paymaster/src/FleetPaymaster.sol` |
+| x402 | x402Facilitator | `0x5849ef6f21fdc21d5194c24ed6c824965a613739` | `x402/src/x402Facilitator.sol` |
+| settlement | SettlementRegistry | `0xdda0728ff635b555d2af471e2821055be08f9127` | `settlement/src/SettlementRegistry.sol` |
 
 Constructor immutables were read back on chain, not assumed: RequestRegistry `p2Registry()` →
 `0x417c41d4…`, Router `feeBps()==500` / `treasury()==0x5c0fc091…`, FleetPaymaster `entryPoint()` →
 the canonical v0.7. Every `owner()` is the new owner `0x038d7B32…1caE`. Cross-verify (39/39 cells
 byte-compared to artifact, 2 RPCs per read) is in the fleet's `REDEPLOY-CROSSVERIFY.md`.
+
+### Live keccak256 of the eight ownable v2.2 addresses — and which are buildable from here
+
+The table above gives addresses; this one gives the bytes you match against, and says plainly which
+rows this repo can actually build. Keccaks are over the **full runtime, metadata trailer included**
+(randomised-then-fixed settings above: `solc 0.8.34`, optimizer 200, cancun, default IPFS metadata), so
+a correct rebuild reproduces the hash rather than only the body. Each was read on `mainnet.base.org`
+and `base-rpc.publicnode.com` and the two agreed on every row, and the runtime is identical on Base,
+OP and Unichain — one set of rows, not three.
+
+| product | address (identical on 8453 / 10 / 130) | runtime B | keccak256 | source in this repo | verdict |
+|---|---|---|---|---|---|
+| p2-forwarder | `0x417c41d406c61E09958032Cd77338fc1F1ac7D45` | 6,303 | `0x6eb51183266250b5abf6475a83fd2dd6bc1be8ca48c36284bddc0a2b80103050` | `p2-forwarder/src/Registry.sol` | EXACT |
+| f1a-payment-links | `0xeD395024Bba719564bec617b6b42CF6fDC8a252c` | 2,904 | `0x7995ad90646dbf01ca0b301c4a318ab94f5b8fd72f73d819cbcc896b114a676d` | `f1a-payment-links/src/RequestRegistry.sol` | **IMM(3)** |
+| g2b-escrow | `0x4B05fA6aD0Ba0D0120Dce19Ce34dde6d1316C237` | 10,425 | `0x6fe6928254a8584d7caf1895d40f172249d480b7d0db5415663277469c8564a9` | `g2b-escrow/src/EscrowFactory.sol` | EXACT |
+| g4b-receipts | `0xAE5951d25FEDD06aB7e124e91Dac3AC20f5e7cAF` | 12,026 | `0xd8e860fdfb69451c69f833e3eda8894f66582a8e892f108f3f52e48ab08e1232` | `g4b-receipts/src/ReceiptNFT.sol` | EXACT |
+| fees | `0x7cacbecbd2e13521ea01ebd049551db31e9caf1b` | 3,547 | `0xcdb01e50113b58faf36e9a3830c04c644baa80e4387878655c39c4a232b04d04` | `fees/src/FeeSplitter.sol` | EXACT |
+| fleet-paymaster | `0x70A615dDc4cd013Cf4D569Ae3394bF4465229B95` | 7,343 | `0x6614b7896d5dcd188d444c39f886240ef04f187b048f745331d12ba7a706fc76` | `fleet-paymaster/src/FleetPaymaster.sol` | **IMM(7)** |
+| x402 | `0x5849eF6f21fDC21d5194c24ED6c824965A613739` | 1,813 | `0x133859d187054a7b6fcc6e5325e4de16ad60ba9bb37f98781a06046b33be508b` | `x402/src/x402Facilitator.sol` | EXACT |
+| settlement | `0xdDA0728Ff635B555D2Af471E2821055bE08F9127` | 1,714 | `0xe459ee35563ea89a4b1bfc28c14d18e1e96f77a159d246d60b7f442b7e0a904d` | `settlement/src/SettlementRegistry.sol` | EXACT |
+
+- **All eight build from this tree.** `x402/`, `settlement/` and `fleet-paymaster/` were vendored for
+  this table (source only; `out/`, `cache/` and `broadcast/` are gitignored like the rest of the repo),
+  so every row's verdict is now reproducible from a clone rather than a measurement only this working
+  tree could make. Each of the three also builds with **no `lib/` at all** — none imports `forge-std`
+  in `src/` — so a bare clone needs only the `remappings.txt` line to keep the metadata hash right.
+  `fleet-executor/` and `g4c-toll-registry/` remain unvendored and are absent here by design: both are
+  ownerless, so they have no row in an owner table.
+- **IMM(3)** — f1a's three constructor immutable slots all hold `0x417c41d4…` (its `p2Registry`, the
+  row above it). Only those slots differ from a fresh compile; the same bytes sit in the same places.
+- **IMM(7)** — the paymaster's seven slots are all one variable, `entryPoint`, and all seven live
+  positions are the artifact's own `immutableReferences` offsets (byte 1335, 1837, 2096, 2825, 3652,
+  3922, 4819), each holding the canonical v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032`. Zero those
+  seven in both the artifact and the live runtime and the two match exactly; nothing else differs.
 
 **The two fixed contracts reproduce from this branch.** `FeeSplitter` compiles to **3,547 B** and is
 byte-identical to the live runtime (keccak `0xcdb01e50…b04d04`, no immutables); `Router` compiles to
