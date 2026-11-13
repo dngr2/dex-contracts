@@ -12,6 +12,17 @@ runtime reproduces the on-chain bytecode.
 - **What revision:** the **deployed-matching** source, which predates a later shared-`FeeMath`/`minFee`
   refactor. Read `SOURCES.md` first — it names the delta exactly.
 
+> **This is `main`, the default branch, and it is NOT the newest line.** It documents the **v1**
+> source of nine contracts still live on Base and eight further chains. Two later generations are
+> live and are on the **`v2` branch**, which is where to start if you want current code: the
+> audit-fixed **v2** set (nine products, fresh Base addresses) and the **v2.2** chain-invariant
+> relaunch (Base + Optimism + Unichain). **Every contract in the table below that has a pause gate now
+> reads `paused()==true`** — frozen 2026-11-11, create paths closed, existing vaults and escrows still
+> paying out; the other six (`f1a` RequestRegistry, `g3a` SponsorTarget, `g4b` ReceiptNFT, `p3` Router,
+> `p3c` P3cDelegate, `f1c` DustSweeper) carry no `paused()` at all. Nothing here is deleted: `main`
+> repoints only at a deploy, and these addresses stay verifiable. Source on `main` is untouched by that
+> rule; this paragraph is prose only.
+
 ## Live contracts → source → byte-match
 
 Everything below was checked cold: fetch the live runtime with `eth_getCode`, strip the CBOR metadata
@@ -94,9 +105,11 @@ full cold readback: `products/g2b-escrow/MULTICHAIN-DEPLOY-EVIDENCE.md`,
 
 ## Products not deployed from this tree
 
-`shared/FeeMath.sol` is the shared toll library referenced by current upstream `src/`; the live code
+`shared/FeeMath.sol` is the shared toll library referenced by current upstream `src/`; the v1 code
 in this tree predates it and inlines the same arithmetic (see `SOURCES.md`). `p4-atomic`
-(SHA-256 escrow, a g2b variant) is built but not yet deployed, so it is out of scope here.
+(SHA-256 escrow, a g2b variant) is built and tested but **not deployed** anywhere — the live hashlock
+escrow is the **keccak** g2b factory `0x80793a7d35f735bc76BeAf22B1f413926818f410` (Base + Optimism,
+both paused), so a p4 escrow and a Solana `OP_SHA256` leg cannot open each other.
 
 ## Layout
 
